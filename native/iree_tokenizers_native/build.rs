@@ -27,6 +27,10 @@ fn main() {
         .define("IREE_THREADING_ENABLE", "0")
         .define("IREE_FILE_IO_ENABLE", "0");
 
+    if target.contains("apple-darwin") {
+        build.flag_if_supported("-mmacosx-version-min=11.0");
+    }
+
     for manifest in ["sources/base_sources.txt", "sources/tokenizer_sources.txt"] {
         for source in read_manifest(&source_root.join(manifest)) {
             build.file(source_root.join(source));

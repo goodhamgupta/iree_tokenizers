@@ -6,8 +6,29 @@ on:
   pull_request:
 
 jobs:
+  format:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.1.1"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fetch deps
+        run: mix deps.get
+      - name: Check Elixir formatting
+        run: mix format --check-formatted
+      - name: Check Rust formatting
+        run: cargo fmt --check
+        working-directory: native/iree_tokenizers_native
+
   test:
-    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     env:
       IREE_TOKENIZERS_BUILD: "1"
     steps:
@@ -15,9 +36,12 @@ jobs:
       - uses: erlef/setup-beam@v1
         with:
           elixir-version: "1.19.5"
-          otp-version: "28.0"
+          otp-version: "28.1.1"
       - uses: dtolnay/rust-toolchain@stable
       - name: Fetch deps
         run: mix deps.get
+      - name: Native crate tests
+        run: cargo test
+        working-directory: native/iree_tokenizers_native
       - name: Run tests
         run: mix test
