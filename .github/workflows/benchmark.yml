@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  gpt2-graphs:
+  generate-graphs:
     runs-on: macos-latest
     env:
       IREE_TOKENIZERS_BUILD: "1"

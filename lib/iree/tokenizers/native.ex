@@ -10,6 +10,11 @@ defmodule IREE.Tokenizers.Native do
     crate: "iree_tokenizers_native",
     version: version,
     base_url: "#{github_url}/releases/download/v#{version}",
+    targets: [
+      "aarch64-apple-darwin",
+      "x86_64-apple-darwin",
+      "x86_64-unknown-linux-gnu"
+    ],
     force_build:
       Mix.env() in [:dev, :test] or System.get_env("IREE_TOKENIZERS_BUILD") in ["1", "true"]
 

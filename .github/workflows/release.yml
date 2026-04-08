@@ -61,6 +61,8 @@ jobs:
           otp-version: "28.1.1"
       - name: Fetch deps
         run: mix deps.get
+      - name: Compile project metadata
+        run: mix compile
       - name: Generate checksum file
         shell: bash
         run: |

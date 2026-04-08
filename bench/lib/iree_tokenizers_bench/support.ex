@@ -227,8 +227,8 @@ defmodule IREETokenizersBench.Support do
   end
 
   def load_tokenizers(repo, opts \\ []) do
-    with {:ok, iree_tokenizer} <- IREETokenizer.from_pretrained(repo, opts),
-         {:ok, hf_tokenizer} <- HFTokenizer.from_pretrained(repo, opts) do
+    with {:ok, iree_tokenizer} <- IREETokenizer.from_pretrained(repo, iree_pretrained_opts(opts)),
+         {:ok, hf_tokenizer} <- HFTokenizer.from_pretrained(repo, hf_pretrained_opts(opts)) do
       {:ok, iree_tokenizer, hf_tokenizer}
     end
   end
@@ -237,6 +237,70 @@ defmodule IREETokenizersBench.Support do
     case System.get_env("HF_TOKEN") do
       nil -> []
       token -> [token: token]
+    end
+  end
+
+  defp iree_pretrained_opts(opts), do: opts
+
+  defp hf_pretrained_opts(opts) do
+    token = Keyword.get(opts, :token)
+    opts = Keyword.drop(opts, [:token])
+
+    if token do
+      Keyword.put(opts, :http_client, {__MODULE__.HFHTTPClient, token: token})
+    else
+      opts
+    end
+  end
+
+  defmodule HFHTTPClient do
+    def request(opts) do
+      token = opts[:token]
+      url = build_url(opts)
+      method = opts |> Keyword.get(:method, :get) |> to_method()
+
+      headers =
+        opts
+        |> Keyword.get(:headers, [])
+        |> maybe_put_auth(token)
+        |> Enum.map(fn {key, value} -> {to_charlist(key), to_charlist(value)} end)
+
+      http_opts = [
+        ssl: [
+          verify: :verify_peer,
+          cacertfile: String.to_charlist(CAStore.file_path())
+        ]
+      ]
+
+      request = {to_charlist(url), headers}
+
+      case :httpc.request(method, request, http_opts, body_format: :binary) do
+        {:ok, {{_, status, _}, raw_headers, body}} ->
+          response_headers =
+            Enum.map(raw_headers, fn {key, value} ->
+              {String.downcase(to_string(key)), to_string(value)}
+            end)
+
+          {:ok, %{status: status, headers: response_headers, body: body}}
+
+        {:error, reason} ->
+          {:error, reason}
+      end
+    end
+
+    defp maybe_put_auth(headers, nil), do: headers
+    defp maybe_put_auth(headers, token), do: [{"authorization", "Bearer #{token}"} | headers]
+
+    defp to_method(:get), do: :get
+    defp to_method(:head), do: :head
+
+    defp build_url(opts) do
+      url = Keyword.fetch!(opts, :url)
+
+      case Keyword.get(opts, :base_url) do
+        nil -> url
+        base_url -> URI.merge(base_url, url) |> to_string()
+      end
     end
   end
 
