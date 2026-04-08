@@ -1,4 +1,9 @@
-#![allow(non_camel_case_types, non_snake_case, non_upper_case_globals, dead_code)]
+#![allow(
+    non_camel_case_types,
+    non_snake_case,
+    non_upper_case_globals,
+    dead_code
+)]
 
 use std::ffi::{c_char, c_void};
 
@@ -203,8 +208,11 @@ unsafe extern "C" {
     ) -> iree_status_t;
 
     pub fn iree_tokenizer_free(tokenizer: *mut iree_tokenizer_t);
-    pub fn iree_tokenizer_vocab(tokenizer: *const iree_tokenizer_t) -> *const iree_tokenizer_vocab_t;
-    pub fn iree_tokenizer_model_type_name(tokenizer: *const iree_tokenizer_t) -> iree_string_view_t;
+    pub fn iree_tokenizer_vocab(
+        tokenizer: *const iree_tokenizer_t,
+    ) -> *const iree_tokenizer_vocab_t;
+    pub fn iree_tokenizer_model_type_name(tokenizer: *const iree_tokenizer_t)
+        -> iree_string_view_t;
 
     pub fn iree_tokenizer_encode(
         tokenizer: *const iree_tokenizer_t,
@@ -352,7 +360,10 @@ pub fn empty_offset_runs() -> iree_tokenizer_offset_run_list_t {
 }
 
 pub fn transform_buffer_recommended_size(text_size: usize) -> usize {
-    let expanded = if text_size <= IREE_TOKENIZER_TRANSFORM_BUFFER_MAX_SIZE / IREE_TOKENIZER_TRANSFORM_BUFFER_EXPANSION_FACTOR {
+    let expanded = if text_size
+        <= IREE_TOKENIZER_TRANSFORM_BUFFER_MAX_SIZE
+            / IREE_TOKENIZER_TRANSFORM_BUFFER_EXPANSION_FACTOR
+    {
         text_size * IREE_TOKENIZER_TRANSFORM_BUFFER_EXPANSION_FACTOR
     } else {
         IREE_TOKENIZER_TRANSFORM_BUFFER_MAX_SIZE

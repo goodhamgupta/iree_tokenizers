@@ -1,10 +1,11 @@
 use std::{
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
 fn main() {
+    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR"));
+    let target = env::var("TARGET").expect("TARGET");
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     let vendor_root = manifest_dir.join("vendor/iree_tokenizer_src");
     let source_root = manifest_dir;
@@ -17,6 +18,7 @@ fn main() {
     let mut build = cc::Build::new();
     build
         .include(&vendor_root)
+        .cargo_metadata(false)
         .warnings(false)
         .flag_if_supported("-std=gnu11")
         .define("IREE_ALLOCATOR_SYSTEM_CTL", "iree_allocator_libc_ctl")
@@ -26,12 +28,22 @@ fn main() {
         .define("IREE_FILE_IO_ENABLE", "0");
 
     for manifest in ["sources/base_sources.txt", "sources/tokenizer_sources.txt"] {
-      for source in read_manifest(&source_root.join(manifest)) {
-          build.file(source_root.join(source));
-      }
+        for source in read_manifest(&source_root.join(manifest)) {
+            build.file(source_root.join(source));
+        }
     }
 
     build.compile("iree_tokenizer_bundle");
+
+    let archive = out_dir.join("libiree_tokenizer_bundle.a");
+    println!("cargo:rustc-link-search=native={}", out_dir.display());
+    if target.contains("apple-darwin") {
+        println!("cargo:rustc-link-arg=-Wl,-force_load,{}", archive.display());
+    } else {
+        println!("cargo:rustc-link-arg=-Wl,--whole-archive");
+        println!("cargo:rustc-link-lib=static=iree_tokenizer_bundle");
+        println!("cargo:rustc-link-arg=-Wl,--no-whole-archive");
+    }
 }
 
 fn read_manifest(path: &Path) -> Vec<String> {

@@ -78,7 +78,10 @@ pub fn check_status(status: ffi::iree_status_t) -> Result<()> {
     }
 
     let code = unsafe { ffi::iree_status_consume_code(status) } as u32;
-    Err(TokenizerError::new(code_to_kind(code), status_code_message(code)))
+    Err(TokenizerError::new(
+        code_to_kind(code),
+        status_code_message(code),
+    ))
 }
 
 pub fn is_resource_exhausted(status: ffi::iree_status_t) -> bool {
@@ -96,7 +99,9 @@ pub fn status_code_message(code: u32) -> String {
         return format!("status code {code}");
     }
 
-    unsafe { CStr::from_ptr(ptr) }.to_string_lossy().into_owned()
+    unsafe { CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn code_to_kind(code: u32) -> ErrorKind {
@@ -123,16 +128,12 @@ fn code_to_kind(code: u32) -> ErrorKind {
             ErrorKind::FailedPrecondition
         }
         x if x == ffi::iree_status_code_e::IREE_STATUS_ABORTED as u32 => ErrorKind::Aborted,
-        x if x == ffi::iree_status_code_e::IREE_STATUS_OUT_OF_RANGE as u32 => {
-            ErrorKind::OutOfRange
-        }
+        x if x == ffi::iree_status_code_e::IREE_STATUS_OUT_OF_RANGE as u32 => ErrorKind::OutOfRange,
         x if x == ffi::iree_status_code_e::IREE_STATUS_UNIMPLEMENTED as u32 => {
             ErrorKind::Unimplemented
         }
         x if x == ffi::iree_status_code_e::IREE_STATUS_INTERNAL as u32 => ErrorKind::Internal,
-        x if x == ffi::iree_status_code_e::IREE_STATUS_UNAVAILABLE as u32 => {
-            ErrorKind::Unavailable
-        }
+        x if x == ffi::iree_status_code_e::IREE_STATUS_UNAVAILABLE as u32 => ErrorKind::Unavailable,
         x if x == ffi::iree_status_code_e::IREE_STATUS_DATA_LOSS as u32 => ErrorKind::DataLoss,
         x if x == ffi::iree_status_code_e::IREE_STATUS_UNAUTHENTICATED as u32 => {
             ErrorKind::Unauthenticated

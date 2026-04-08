@@ -9,6 +9,7 @@ defmodule IREE.Tokenizers.HTTPClient do
   def request(opts) do
     url = Keyword.fetch!(opts, :url)
     method = opts |> Keyword.get(:method, :get) |> to_method()
+
     headers =
       opts
       |> Keyword.get(:headers, [])
@@ -17,7 +18,11 @@ defmodule IREE.Tokenizers.HTTPClient do
     http_opts = [
       ssl: [
         verify: :verify_peer,
-        cacerts: CAStore.file_path() |> File.read!() |> :public_key.pem_decode() |> Enum.map(&:public_key.pem_entry_decode/1)
+        cacerts:
+          CAStore.file_path()
+          |> File.read!()
+          |> :public_key.pem_decode()
+          |> Enum.map(&:public_key.pem_entry_decode/1)
       ]
     ]
 

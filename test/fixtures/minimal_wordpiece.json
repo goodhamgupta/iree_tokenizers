@@ -1,0 +1,22 @@
+{
+  "version": "1.0",
+  "model": {
+    "type": "WordPiece",
+    "unk_token": "[UNK]",
+    "continuing_subword_prefix": "##",
+    "max_input_chars_per_word": 100,
+    "vocab": {
+      "[UNK]": 0,
+      "hello": 1,
+      "world": 2
+    }
+  },
+  "pre_tokenizer": {
+    "type": "Whitespace"
+  },
+  "decoder": {
+    "type": "WordPiece",
+    "prefix": "##",
+    "cleanup": false
+  }
+}

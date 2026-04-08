@@ -67,7 +67,10 @@ pub fn tokenizer_from_buffer(buffer: rustler::Binary) -> Result<Tokenizer> {
     let model_type = string_view_to_string(unsafe { ffi::iree_tokenizer_model_type_name(raw) });
 
     Ok(Tokenizer {
-        resource: ResourceArc::new(TokenizerResource { ptr: raw, model_type }),
+        resource: ResourceArc::new(TokenizerResource {
+            ptr: raw,
+            model_type,
+        }),
     })
 }
 
@@ -78,7 +81,12 @@ pub fn tokenizer_encode(
     opts: Vec<EncodeOption>,
 ) -> Result<Encoding> {
     let options = parse_encode_options(opts);
-    encode_impl(&tokenizer.resource, text.as_slice(), options.add_special_tokens, options.track_offsets)
+    encode_impl(
+        &tokenizer.resource,
+        text.as_slice(),
+        options.add_special_tokens,
+        options.track_offsets,
+    )
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -279,7 +287,8 @@ pub fn tokenizer_model_type(tokenizer: Tokenizer) -> String {
 #[rustler::nif]
 pub fn tokenizer_token_to_id(tokenizer: Tokenizer, token: rustler::Binary) -> Option<i32> {
     let vocab = unsafe { ffi::iree_tokenizer_vocab(tokenizer.resource.ptr) };
-    let id = unsafe { ffi::iree_tokenizer_vocab_lookup(vocab, ffi::make_string_view(token.as_slice())) };
+    let id =
+        unsafe { ffi::iree_tokenizer_vocab_lookup(vocab, ffi::make_string_view(token.as_slice())) };
     (id >= 0).then_some(id)
 }
 
@@ -330,7 +339,10 @@ pub fn tokenizer_mask_token_id(tokenizer: Tokenizer) -> Option<i32> {
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-pub fn encode_stream_new(tokenizer: Tokenizer, opts: Vec<EncodeOption>) -> Result<crate::stream::EncodeStream> {
+pub fn encode_stream_new(
+    tokenizer: Tokenizer,
+    opts: Vec<EncodeOption>,
+) -> Result<crate::stream::EncodeStream> {
     let options = parse_encode_options(opts);
     let state = EncodeStreamState::new(tokenizer.resource.clone(), options.add_special_tokens)?;
     Ok(crate::stream::EncodeStream {
@@ -342,7 +354,10 @@ pub fn encode_stream_new(tokenizer: Tokenizer, opts: Vec<EncodeOption>) -> Resul
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
-pub fn decode_stream_new(tokenizer: Tokenizer, opts: Vec<DecodeOption>) -> Result<crate::stream::DecodeStream> {
+pub fn decode_stream_new(
+    tokenizer: Tokenizer,
+    opts: Vec<DecodeOption>,
+) -> Result<crate::stream::DecodeStream> {
     let options = parse_decode_options(opts);
     let state = DecodeStreamState::new(tokenizer.resource.clone(), options.skip_special_tokens)?;
     Ok(crate::stream::DecodeStream {
@@ -400,12 +415,21 @@ pub fn encode_impl(
 
         let offsets = if track_offsets {
             offsets.truncate(token_count);
-            Some(offsets.into_iter().map(|offset| (offset.start as u64, offset.end as u64)).collect())
+            Some(
+                offsets
+                    .into_iter()
+                    .map(|offset| (offset.start as u64, offset.end as u64))
+                    .collect(),
+            )
         } else {
             None
         };
 
-        return Ok(Encoding { ids, type_ids, offsets });
+        return Ok(Encoding {
+            ids,
+            type_ids,
+            offsets,
+        });
     }
 }
 
@@ -504,7 +528,10 @@ fn string_view_to_string(view: ffi::iree_string_view_t) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
-fn special_id(tokenizer: &TokenizerResource, accessor: impl Fn(ffi::iree_tokenizer_special_ids_t) -> i32) -> Option<i32> {
+fn special_id(
+    tokenizer: &TokenizerResource,
+    accessor: impl Fn(ffi::iree_tokenizer_special_ids_t) -> i32,
+) -> Option<i32> {
     let vocab = unsafe { ffi::iree_tokenizer_vocab(tokenizer.ptr) };
     let ids = unsafe { ffi::iree_tokenizer_vocab_special_ids(vocab) };
     let value = accessor(ids);

@@ -13,17 +13,23 @@ defmodule IREETokenizers.MixProject do
       deps: deps(),
       package: package(),
       docs: docs(),
-      description: "Fast Hugging Face tokenizer.json bindings for Elixir via the IREE tokenizer runtime",
-      preferred_cli_env: [
-        docs: :docs,
-        "hex.publish": :docs
-      ]
+      description:
+        "Fast Hugging Face tokenizer.json bindings for Elixir via the IREE tokenizer runtime"
     ]
   end
 
   def application do
     [
       extra_applications: [:logger, :inets, :ssl, :public_key]
+    ]
+  end
+
+  def cli do
+    [
+      preferred_envs: [
+        docs: :docs,
+        "hex.publish": :docs
+      ]
     ]
   end
 

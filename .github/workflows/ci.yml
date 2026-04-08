@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    env:
+      IREE_TOKENIZERS_BUILD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.0"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fetch deps
+        run: mix deps.get
+      - name: Run tests
+        run: mix test

@@ -1,0 +1,24 @@
+{
+  "version": "1.0",
+  "model": {
+    "type": "Unigram",
+    "vocab": [
+      ["<unk>", -10.0],
+      ["▁hello", -1.0],
+      ["▁world", -1.0]
+    ],
+    "unk_id": 0
+  },
+  "pre_tokenizer": {
+    "type": "Metaspace",
+    "replacement": "▁",
+    "prepend_scheme": "always",
+    "split": true
+  },
+  "decoder": {
+    "type": "Metaspace",
+    "replacement": "▁",
+    "prepend_scheme": "always",
+    "split": true
+  }
+}

@@ -17,7 +17,8 @@ defmodule IREE.Tokenizers.Tokenizer do
     IREE.Tokenizers.Native.tokenizer_from_buffer(buffer)
   end
 
-  def from_buffer(_buffer), do: {:error, {:invalid_argument, "expected a binary tokenizer.json buffer"}}
+  def from_buffer(_buffer),
+    do: {:error, {:invalid_argument, "expected a binary tokenizer.json buffer"}}
 
   @spec from_file(Path.t()) :: result(t())
   def from_file(path) when is_binary(path) do
@@ -25,14 +26,17 @@ defmodule IREE.Tokenizers.Tokenizer do
       from_buffer(contents)
     else
       {:error, reason} ->
-        {:error, {:not_found, "failed to read #{path}: #{Exception.message(File.Error.exception(action: \"read\", path: path, reason: reason))}"}}
+        error = File.Error.exception(action: "read", path: path, reason: reason)
+        {:error, {:not_found, "failed to read #{path}: #{Exception.message(error)}"}}
     end
   end
 
   def from_file(_path), do: {:error, {:invalid_argument, "expected a file path"}}
 
   @spec from_pretrained(binary(), keyword()) :: result(t())
-  def from_pretrained(repo_id, opts \\ []) when is_binary(repo_id) do
+  def from_pretrained(repo_id, opts \\ [])
+
+  def from_pretrained(repo_id, opts) when is_binary(repo_id) do
     opts =
       Keyword.validate!(opts,
         revision: "main",
@@ -47,22 +51,31 @@ defmodule IREE.Tokenizers.Tokenizer do
     app_version = List.to_string(app_version)
 
     url = "https://huggingface.co/#{repo_id}/resolve/#{opts[:revision]}/tokenizer.json"
+
     headers =
       [{"user-agent", "iree_tokenizers/#{app_version}"}]
       |> maybe_put_auth(opts[:token])
 
-    cache_dir = opts[:cache_dir]
-    cache_key = cache_key(url, opts[:revision], repo_id)
-
-    with {:ok, response} <- maybe_cached_get(http_client, http_opts, url, headers, cache_dir, cache_key, opts[:use_cache]) do
+    with {:ok, response} <-
+           get_pretrained_tokenizer(
+             http_client,
+             http_opts,
+             url,
+             headers,
+             opts[:cache_dir],
+             opts[:use_cache]
+           ) do
       from_buffer(response.body)
     end
   end
 
-  def from_pretrained(_repo_id, _opts), do: {:error, {:invalid_argument, "expected a Hugging Face repo id"}}
+  def from_pretrained(_repo_id, _opts),
+    do: {:error, {:invalid_argument, "expected a Hugging Face repo id"}}
 
   @spec encode(t(), encode_input(), keyword()) :: result(Encoding.t())
-  def encode(%__MODULE__{} = tokenizer, input, opts \\ []) when is_binary(input) do
+  def encode(tokenizer, input, opts \\ [])
+
+  def encode(%__MODULE__{} = tokenizer, input, opts) when is_binary(input) do
     opts = Keyword.validate!(opts, add_special_tokens: true, track_offsets: false)
     IREE.Tokenizers.Native.tokenizer_encode(tokenizer, input, opts)
   end
@@ -74,13 +87,20 @@ defmodule IREE.Tokenizers.Tokenizer do
     do: {:error, {:invalid_argument, "expected a binary input"}}
 
   @spec encode_batch(t(), [encode_input()], keyword()) :: result([Encoding.t()])
-  def encode_batch(%__MODULE__{} = tokenizer, inputs, opts \\ []) when is_list(inputs) do
+  def encode_batch(tokenizer, inputs, opts \\ [])
+
+  def encode_batch(%__MODULE__{} = tokenizer, inputs, opts) when is_list(inputs) do
     opts = Keyword.validate!(opts, add_special_tokens: true, track_offsets: false)
 
     case Enum.find(inputs, &(not is_binary(&1))) do
-      nil -> IREE.Tokenizers.Native.tokenizer_encode_batch(tokenizer, inputs, opts)
-      {_left, _right} -> {:error, {:invalid_argument, "pair sequence inputs are not supported in v1"}}
-      _ -> {:error, {:invalid_argument, "expected a list of binary inputs"}}
+      nil ->
+        IREE.Tokenizers.Native.tokenizer_encode_batch(tokenizer, inputs, opts)
+
+      {_left, _right} ->
+        {:error, {:invalid_argument, "pair sequence inputs are not supported in v1"}}
+
+      _ ->
+        {:error, {:invalid_argument, "expected a list of binary inputs"}}
     end
   end
 
@@ -88,7 +108,9 @@ defmodule IREE.Tokenizers.Tokenizer do
     do: {:error, {:invalid_argument, "expected a list of binary inputs"}}
 
   @spec decode(t(), [integer()], keyword()) :: result(binary())
-  def decode(%__MODULE__{} = tokenizer, ids, opts \\ []) when is_list(ids) do
+  def decode(tokenizer, ids, opts \\ [])
+
+  def decode(%__MODULE__{} = tokenizer, ids, opts) when is_list(ids) do
     opts = Keyword.validate!(opts, skip_special_tokens: true)
     IREE.Tokenizers.Native.tokenizer_decode(tokenizer, ids, opts)
   end
@@ -97,7 +119,9 @@ defmodule IREE.Tokenizers.Tokenizer do
     do: {:error, {:invalid_argument, "expected a list of token ids"}}
 
   @spec decode_batch(t(), [[integer()]], keyword()) :: result([binary()])
-  def decode_batch(%__MODULE__{} = tokenizer, batch_ids, opts \\ []) when is_list(batch_ids) do
+  def decode_batch(tokenizer, batch_ids, opts \\ [])
+
+  def decode_batch(%__MODULE__{} = tokenizer, batch_ids, opts) when is_list(batch_ids) do
     opts = Keyword.validate!(opts, skip_special_tokens: true)
 
     case Enum.find(batch_ids, &(not is_list(&1))) do
@@ -110,10 +134,12 @@ defmodule IREE.Tokenizers.Tokenizer do
     do: {:error, {:invalid_argument, "expected a list of token id lists"}}
 
   @spec vocab_size(t()) :: non_neg_integer()
-  def vocab_size(%__MODULE__{} = tokenizer), do: IREE.Tokenizers.Native.tokenizer_vocab_size(tokenizer)
+  def vocab_size(%__MODULE__{} = tokenizer),
+    do: IREE.Tokenizers.Native.tokenizer_vocab_size(tokenizer)
 
   @spec model_type(t()) :: binary()
-  def model_type(%__MODULE__{} = tokenizer), do: IREE.Tokenizers.Native.tokenizer_model_type(tokenizer)
+  def model_type(%__MODULE__{} = tokenizer),
+    do: IREE.Tokenizers.Native.tokenizer_model_type(tokenizer)
 
   @spec token_to_id(t(), binary()) :: integer() | nil
   def token_to_id(%__MODULE__{} = tokenizer, token) when is_binary(token),
@@ -137,44 +163,100 @@ defmodule IREE.Tokenizers.Tokenizer do
         {:mask_token_id, :tokenizer_mask_token_id}
       ] do
     @spec unquote(fun)(t()) :: integer() | nil
-    def unquote(fun)(%__MODULE__{} = tokenizer), do: apply(IREE.Tokenizers.Native, unquote(native), [tokenizer])
+    def unquote(fun)(%__MODULE__{} = tokenizer),
+      do: apply(IREE.Tokenizers.Native, unquote(native), [tokenizer])
   end
 
   defp maybe_put_auth(headers, nil), do: headers
   defp maybe_put_auth(headers, token), do: [{"authorization", "Bearer #{token}"} | headers]
 
-  defp maybe_cached_get(http_client, http_opts, url, headers, cache_dir, cache_key, use_cache) do
-    cache_path = Path.join(cache_dir, cache_key)
+  defp get_pretrained_tokenizer(http_client, http_opts, url, headers, cache_dir, use_cache) do
+    File.mkdir_p!(cache_dir)
 
-    if use_cache and File.exists?(cache_path) do
-      {:ok, %{status: 200, headers: [], body: File.read!(cache_path)}}
-    else
-      File.mkdir_p!(cache_dir)
+    case maybe_head(http_client, http_opts, url, headers, use_cache) do
+      {:ok, %{status: status, headers: response_headers}} when status in 200..299 ->
+        case fetch_header(response_headers, "etag") do
+          {:ok, etag} ->
+            cache_path = Path.join(cache_dir, cache_key(url, etag))
 
-      request_opts =
-        http_opts
-        |> Keyword.put(:url, url)
-        |> Keyword.put(:headers, headers)
-        |> Keyword.put(:method, :get)
+            if use_cache and File.exists?(cache_path) do
+              {:ok, %{status: 200, headers: response_headers, body: File.read!(cache_path)}}
+            else
+              get_and_cache(http_client, http_opts, url, headers, cache_path)
+            end
 
-      with {:ok, %{status: status} = response} when status in 200..299 <- http_client.request(request_opts) do
-        File.write!(cache_path, response.body)
-        {:ok, response}
-      else
-        {:ok, %{status: status, body: body}} ->
-          {:error, {:invalid_argument, "download failed with status #{status}: #{inspect(body)}"}}
+          :error ->
+            get_and_cache(
+              http_client,
+              http_opts,
+              url,
+              headers,
+              Path.join(cache_dir, fallback_cache_key(url))
+            )
+        end
 
-        {:error, reason} ->
-          {:error, {:internal, "download failed: #{inspect(reason)}"}}
-      end
+      {:ok, %{status: status, body: body}} ->
+        {:error, {:invalid_argument, "download failed with status #{status}: #{inspect(body)}"}}
+
+      {:error, _reason} ->
+        get_and_cache(
+          http_client,
+          http_opts,
+          url,
+          headers,
+          Path.join(cache_dir, fallback_cache_key(url))
+        )
     end
   end
 
-  defp cache_key(url, revision, repo_id) do
-    [repo_id, revision, url]
+  defp maybe_head(http_client, http_opts, url, headers, true) do
+    request_opts =
+      http_opts
+      |> Keyword.put(:url, url)
+      |> Keyword.put(:headers, headers)
+      |> Keyword.put(:method, :head)
+
+    http_client.request(request_opts)
+  end
+
+  defp maybe_head(_http_client, _http_opts, _url, _headers, false), do: {:error, :disabled}
+
+  defp get_and_cache(http_client, http_opts, url, headers, cache_path) do
+    request_opts =
+      http_opts
+      |> Keyword.put(:url, url)
+      |> Keyword.put(:headers, headers)
+      |> Keyword.put(:method, :get)
+
+    with {:ok, %{status: status} = response} when status in 200..299 <-
+           http_client.request(request_opts) do
+      File.write!(cache_path, response.body)
+      {:ok, response}
+    else
+      {:ok, %{status: status, body: body}} ->
+        {:error, {:invalid_argument, "download failed with status #{status}: #{inspect(body)}"}}
+
+      {:error, reason} ->
+        {:error, {:internal, "download failed: #{inspect(reason)}"}}
+    end
+  end
+
+  defp fetch_header(headers, key) do
+    case List.keyfind(headers, key, 0) do
+      {_, value} -> {:ok, value}
+      nil -> :error
+    end
+  end
+
+  defp cache_key(url, etag) do
+    [url, etag]
     |> Enum.join(":")
     |> :erlang.md5()
     |> Base.encode16(case: :lower)
+  end
+
+  defp fallback_cache_key(url) do
+    "fallback-" <> cache_key(url, "no-etag")
   end
 end
 

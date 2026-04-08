@@ -11,8 +11,8 @@ use crate::{
 pub struct EncodeStreamState {
     _tokenizer: ResourceArc<TokenizerResource>,
     state: *mut ffi::iree_tokenizer_encode_state_t,
-    state_storage: Vec<u8>,
-    transform_buffer: Vec<u8>,
+    _state_storage: Vec<u8>,
+    _transform_buffer: Vec<u8>,
 }
 
 unsafe impl Send for EncodeStreamState {}
@@ -26,7 +26,10 @@ impl Drop for EncodeStreamState {
 }
 
 impl EncodeStreamState {
-    pub fn new(tokenizer: ResourceArc<TokenizerResource>, add_special_tokens: bool) -> Result<Self> {
+    pub fn new(
+        tokenizer: ResourceArc<TokenizerResource>,
+        add_special_tokens: bool,
+    ) -> Result<Self> {
         let mut state_size = 0usize;
         check_status(unsafe {
             ffi::iree_tokenizer_encode_state_calculate_size(tokenizer.ptr, &mut state_size)
@@ -54,8 +57,8 @@ impl EncodeStreamState {
         Ok(Self {
             _tokenizer: tokenizer,
             state,
-            state_storage,
-            transform_buffer,
+            _state_storage: state_storage,
+            _transform_buffer: transform_buffer,
         })
     }
 
@@ -143,7 +146,7 @@ impl EncodeStreamState {
 pub struct DecodeStreamState {
     _tokenizer: ResourceArc<TokenizerResource>,
     state: *mut ffi::iree_tokenizer_decode_state_t,
-    state_storage: Vec<u8>,
+    _state_storage: Vec<u8>,
 }
 
 unsafe impl Send for DecodeStreamState {}
@@ -157,7 +160,10 @@ impl Drop for DecodeStreamState {
 }
 
 impl DecodeStreamState {
-    pub fn new(tokenizer: ResourceArc<TokenizerResource>, skip_special_tokens: bool) -> Result<Self> {
+    pub fn new(
+        tokenizer: ResourceArc<TokenizerResource>,
+        skip_special_tokens: bool,
+    ) -> Result<Self> {
         let mut state_size = 0usize;
         check_status(unsafe {
             ffi::iree_tokenizer_decode_state_calculate_size(tokenizer.ptr, &mut state_size)
@@ -183,7 +189,7 @@ impl DecodeStreamState {
         Ok(Self {
             _tokenizer: tokenizer,
             state,
-            state_storage,
+            _state_storage: state_storage,
         })
     }
 
@@ -268,27 +274,35 @@ pub struct DecodeStream {
 #[rustler::nif(schedule = "DirtyCpu")]
 pub fn encode_stream_feed(stream: EncodeStream, chunk: rustler::Binary) -> Result<Vec<i32>> {
     let mut guard = stream.resource.inner.lock().expect("encode stream lock");
-    let state = guard.as_mut().ok_or_else(|| invalid_argument("stream already finalized"))?;
+    let state = guard
+        .as_mut()
+        .ok_or_else(|| invalid_argument("stream already finalized"))?;
     state.feed(chunk.as_slice())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
 pub fn encode_stream_finalize(stream: EncodeStream) -> Result<Vec<i32>> {
     let mut guard = stream.resource.inner.lock().expect("encode stream lock");
-    let state = guard.take().ok_or_else(|| invalid_argument("stream already finalized"))?;
+    let state = guard
+        .take()
+        .ok_or_else(|| invalid_argument("stream already finalized"))?;
     state.finalize()
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
 pub fn decode_stream_feed(stream: DecodeStream, ids: Vec<i32>) -> Result<String> {
     let mut guard = stream.resource.inner.lock().expect("decode stream lock");
-    let state = guard.as_mut().ok_or_else(|| invalid_argument("stream already finalized"))?;
+    let state = guard
+        .as_mut()
+        .ok_or_else(|| invalid_argument("stream already finalized"))?;
     state.feed(&ids)
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
 pub fn decode_stream_finalize(stream: DecodeStream) -> Result<String> {
     let mut guard = stream.resource.inner.lock().expect("decode stream lock");
-    let state = guard.take().ok_or_else(|| invalid_argument("stream already finalized"))?;
+    let state = guard
+        .take()
+        .ok_or_else(|| invalid_argument("stream already finalized"))?;
     state.finalize()
 }
