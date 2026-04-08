@@ -19,6 +19,11 @@ defmodule IREETokenizersBench.ModelMatrix do
       repos: ["Qwen/Qwen3.5-9B"]
     },
     %{
+      label: "zai-org/GLM-5.1",
+      requested_repo: "zai-org/GLM-5.1",
+      repos: ["zai-org/GLM-5.1", "zai-org/GLM-5"]
+    },
+    %{
       label: "mistralai/Ministral-3-3B-Reasoning-2512",
       requested_repo: "mistralai/Ministral-3-3B-Reasoning-2512",
       repos: ["mistralai/Ministral-3-3B-Reasoning-2512"]
