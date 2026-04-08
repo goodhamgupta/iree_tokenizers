@@ -21,9 +21,6 @@ jobs:
       - name: Fetch benchmark deps
         run: mix deps.get
         working-directory: bench
-      - name: Generate GPT-2 benchmark graphs
-        run: mix run gpt2_graphs.exs
-        working-directory: bench
       - name: Generate model matrix graphs
         run: mix run model_matrix_graphs.exs
         working-directory: bench

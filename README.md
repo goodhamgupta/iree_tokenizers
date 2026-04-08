@@ -72,27 +72,23 @@ If you need authentication for gated/private repos:
 
 ### Current Local Results
 
-The current benchmark harness compares this package against the published
+The benchmark harness compares this package against the published
 [`tokenizers`](https://hex.pm/packages/tokenizers) package.
 
-#### GPT-2 batch-of-100 throughput
+On a recent local GPT-2 batch-of-100 encode run, this package measured
+`9.4M tokens/sec`. The IREE tokenizer author reports `10.1M tokens/sec` in the
+upstream post. That difference is small enough to be unsurprising and does not
+indicate a correctness problem by itself:
 
-Current local run from [`bench/results/summary.md`](bench/results/summary.md):
+- the local harness measures through Elixir/NIF integration rather than a pure
+  native benchmark
+- the host machine, toolchain, OTP version, and scheduler behavior differ
+- the comparison target in this repo is `elixir-nx/tokenizers`, not the exact
+  native setup used in the upstream post
 
-- Encode:
-  `iree` `9.4M tokens/sec`
-  `tokenizers` `2.5M tokens/sec`
-- Decode:
-  `iree` `66.9M tokens/sec`
-  `tokenizers` `2.3M tokens/sec`
-
-Encode chart:
-
-![GPT-2 encode throughput](bench/results/gpt2_batch100_encode.svg)
-
-Decode chart:
-
-![GPT-2 decode throughput](bench/results/gpt2_batch100_decode.svg)
+The important result is that the implementation remains in the same performance
+class and preserves the expected large speedup over the Elixir `tokenizers`
+package.
 
 #### Model latency comparison
 
@@ -145,12 +141,6 @@ Run the generic encode/decode comparison:
 
 ```bash
 mix run compare.exs
-```
-
-Generate the GPT-2 batch-of-100 graphs:
-
-```bash
-mix run gpt2_graphs.exs
 ```
 
 Generate the multi-model latency/speedup graphs:

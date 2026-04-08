@@ -13,9 +13,6 @@
 /bench/deps/
 /bench/results/*
 !/bench/results/.gitkeep
-!/bench/results/gpt2_batch100_encode.svg
-!/bench/results/gpt2_batch100_decode.svg
 !/bench/results/model_matrix.md
 !/bench/results/model_matrix_latency.svg
 !/bench/results/model_matrix_speedup.svg
-!/bench/results/summary.md
