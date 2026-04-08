@@ -101,40 +101,26 @@ The current checked-in local snapshot from
 
 | Model | Repo used | Tokenizers package (ms) | IREE oneshot / stream (ms) | Speedup |
 | --- | --- | ---: | ---: | --- |
-| `LiquidAI/LFM2.5-1.2B-Instruct` | `LiquidAI/LFM2.5-1.2B-Instruct` | `60.7 ms` | `4.56 ms / 4.62 ms` | `13.3x / 13.2x` |
-| `Qwen/Qwen3.5-9B` | `Qwen/Qwen3.5-9B` | `70.6 ms` | `5.29 ms / 11.0 ms` | `13.4x / 6.4x` |
-| `zai-org/GLM-5.1` | `zai-org/GLM-5.1` | `63.5 ms` | `5.05 ms / 5.83 ms` | `12.6x / 10.9x` |
-| `mistralai/Ministral-3-3B-Reasoning-2512` | `mistralai/Ministral-3-3B-Reasoning-2512` | `63.8 ms` | `4.53 ms / 5.64 ms` | `14.1x / 11.3x` |
-| `google/gemma-4-31B-it` | `google/gemma-4-31B-it` | `19.4 ms` | `3.27 ms / 3.63 ms` | `5.9x / 5.3x` |
-| `google/gemma-4-31B` | `google/gemma-4-31B` | `20.6 ms` | `3.35 ms / 3.61 ms` | `6.2x / 5.7x` |
-| `google/gemma-4-26B-A4B-it` | `google/gemma-4-26B-A4B-it` | `18.1 ms` | `3.3 ms / 3.61 ms` | `5.5x / 5.0x` |
-| `google/gemma-4-26B-A4B` | `google/gemma-4-26B-A4B` | `21.2 ms` | `3.6 ms / 3.51 ms` | `5.9x / 6.0x` |
-| `google/gemma-4-E4B-it` | `google/gemma-4-E4B-it` | `16.8 ms` | `3.53 ms / 3.55 ms` | `4.7x / 4.7x` |
-| `google/gemma-4-E4B` | `google/gemma-4-E4B` | `19.7 ms` | `3.56 ms / 3.78 ms` | `5.5x / 5.2x` |
-| `google/gemma-4-E2B-it` | `google/gemma-4-E2B-it` | `19.9 ms` | `3.61 ms / 3.56 ms` | `5.5x / 5.6x` |
-| `google/gemma-4-E2B` | `google/gemma-4-E2B` | `20.1 ms` | `3.41 ms / 3.59 ms` | `5.9x / 5.6x` |
+| `LiquidAI/LFM2.5-1.2B-Instruct` | `LiquidAI/LFM2.5-1.2B-Instruct` | `64.0 ms` | `4.68 ms / 4.77 ms` | `13.7x / 13.4x` |
+| `Qwen/Qwen3.5-9B` | `Qwen/Qwen3.5-9B` | `70.2 ms` | `4.93 ms / 11.3 ms` | `14.2x / 6.2x` |
+| `zai-org/GLM-5.1` | `zai-org/GLM-5.1` | `63.1 ms` | `4.74 ms / 5.59 ms` | `13.3x / 11.3x` |
+| `mistralai/Ministral-3-3B-Reasoning-2512` | `mistralai/Ministral-3-3B-Reasoning-2512` | `63.0 ms` | `4.69 ms / 5.66 ms` | `13.4x / 11.1x` |
+| `google/gemma-4-31B-it` | `google/gemma-4-31B-it` | `20.1 ms` | `3.39 ms / 3.81 ms` | `5.9x / 5.3x` |
 
 Current skipped target:
 
-- `bartowski/arcee-ai_Trinity-Large-Thinking-GGUF` — no usable `tokenizer.json` exposed from the benchmarked repo/fallbacks at the time of the run
+- `arcee-ai/Trinity-Large-Preview` — no usable `tokenizer.json` exposed at the time of the run
 
-The benchmark harness itself is configured to target a broader live Hugging
-Face matrix including:
+The benchmark harness intentionally keeps only one representative repo per
+tokenizer family when multiple model variants share the same tokenizer. The
+current family-level matrix targets:
 
 - `LiquidAI/LFM2.5-1.2B-Instruct`
 - `Qwen/Qwen3.5-9B`
 - `zai-org/GLM-5.1` with fallback to `zai-org/GLM-5`
 - `mistralai/Ministral-3-3B-Reasoning-2512`
-- `bartowski/arcee-ai_Trinity-Large-Thinking-GGUF` with fallback to a non-GGUF Trinity repo when needed
-- Gemma 4 variants under `google/`:
-  - `gemma-4-31B-it`
-  - `gemma-4-31B`
-  - `gemma-4-26B-A4B-it`
-  - `gemma-4-26B-A4B`
-  - `gemma-4-E4B-it`
-  - `gemma-4-E4B`
-  - `gemma-4-E2B-it`
-  - `gemma-4-E2B`
+- `arcee-ai/Trinity-Large-Preview`
+- `google/gemma-4-31B-it`
 
 Latency chart:
 

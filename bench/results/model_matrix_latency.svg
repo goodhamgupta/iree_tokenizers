@@ -1,125 +1,55 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="980" height="926" viewBox="0 0 980 926">
-  <rect width="980" height="926" rx="10" fill="#0E1118" />
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="450" viewBox="0 0 980 450">
+  <rect width="980" height="450" rx="10" fill="#0E1118" />
   <text x="18" y="34" fill="#F7FAFF" font-family="system-ui, sans-serif" font-size="22">Tokenizer latency comparison</text>
   <text x="18" y="58" fill="#7F8796" font-family="system-ui, sans-serif" font-size="14">Latency in milliseconds, lower is better</text>
   <text x="18" y="103" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="14">LiquidAI/LFM2.5-1.2B-Instruct</text>
-<rect x="330" y="78" width="524.83" height="14" rx="4" fill="#5D6472" />
-<text x="864.8344924292857" y="89" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 60.7 ms</text>
+<rect x="330" y="78" width="555.89" height="14" rx="4" fill="#5D6472" />
+<text x="895.8939605341837" y="89" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 64.0 ms</text>
 
-<rect x="330" y="96" width="39.37" height="14" rx="4" fill="#5A9BF6" />
-<text x="379.3729550572938" y="107" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 4.56 ms</text>
+<rect x="330" y="96" width="40.64" height="14" rx="4" fill="#5A9BF6" />
+<text x="380.6359805233634" y="107" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 4.68 ms</text>
 
-<rect x="330" y="114" width="39.87" height="14" rx="4" fill="#35C296" />
-<text x="379.8740811036671" y="125" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 4.62 ms</text>
+<rect x="330" y="114" width="41.42" height="14" rx="4" fill="#35C296" />
+<text x="381.4176087018423" y="125" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 4.77 ms</text>
 
 <text x="18" y="171" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="14">Qwen/Qwen3.5-9B</text>
 <rect x="330" y="146" width="610.0" height="14" rx="4" fill="#5D6472" />
-<text x="950.0" y="157" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 70.6 ms</text>
+<text x="950.0" y="157" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 70.2 ms</text>
 
-<rect x="330" y="164" width="45.69" height="14" rx="4" fill="#5A9BF6" />
-<text x="385.6888712624467" y="175" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 5.29 ms</text>
+<rect x="330" y="164" width="42.85" height="14" rx="4" fill="#5A9BF6" />
+<text x="382.85059369572025" y="175" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 4.93 ms</text>
 
-<rect x="330" y="182" width="95.17" height="14" rx="4" fill="#35C296" />
-<text x="435.1707482896843" y="193" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 11.0 ms</text>
+<rect x="330" y="182" width="98.0" height="14" rx="4" fill="#35C296" />
+<text x="437.998804066175" y="193" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 11.3 ms</text>
 
 <text x="18" y="239" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="14">zai-org/GLM-5.1</text>
-<rect x="330" y="214" width="548.23" height="14" rx="4" fill="#5D6472" />
-<text x="888.2318947323691" y="225" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 63.5 ms</text>
+<rect x="330" y="214" width="547.66" height="14" rx="4" fill="#5D6472" />
+<text x="887.6608103875395" y="225" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 63.1 ms</text>
 
-<rect x="330" y="232" width="43.63" height="14" rx="4" fill="#5A9BF6" />
-<text x="383.6325264514667" y="243" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 5.05 ms</text>
+<rect x="330" y="232" width="41.18" height="14" rx="4" fill="#5A9BF6" />
+<text x="381.1831202482986" y="243" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 4.74 ms</text>
 
-<rect x="330" y="250" width="50.42" height="14" rx="4" fill="#35C296" />
-<text x="390.41500828600164" y="261" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 5.83 ms</text>
+<rect x="330" y="250" width="48.59" height="14" rx="4" fill="#35C296" />
+<text x="388.59121842877073" y="261" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 5.59 ms</text>
 
 <text x="18" y="307" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="14">mistralai/Ministral-3-3B-Reasoning-2512</text>
-<rect x="330" y="282" width="551.59" height="14" rx="4" fill="#5D6472" />
-<text x="891.5928952847694" y="293" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 63.8 ms</text>
+<rect x="330" y="282" width="547.44" height="14" rx="4" fill="#5D6472" />
+<text x="887.4350066915345" y="293" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 63.0 ms</text>
 
-<rect x="330" y="300" width="39.13" height="14" rx="4" fill="#5A9BF6" />
-<text x="379.13103213835495" y="311" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 4.53 ms</text>
+<rect x="330" y="300" width="40.76" height="14" rx="4" fill="#5A9BF6" />
+<text x="380.7575671289046" y="311" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 4.69 ms</text>
 
-<rect x="330" y="318" width="48.77" height="14" rx="4" fill="#35C296" />
-<text x="388.77338847891673" y="329" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 5.64 ms</text>
+<rect x="330" y="318" width="49.14" height="14" rx="4" fill="#35C296" />
+<text x="389.13835815370595" y="329" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 5.66 ms</text>
 
 <text x="18" y="375" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="14">google/gemma-4-31B-it</text>
-<rect x="330" y="350" width="167.5" height="14" rx="4" fill="#5D6472" />
-<text x="507.4970609481452" y="361" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 19.4 ms</text>
+<rect x="330" y="350" width="174.31" height="14" rx="4" fill="#5D6472" />
+<text x="514.3117685583303" y="361" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 20.1 ms</text>
 
-<rect x="330" y="368" width="28.25" height="14" rx="4" fill="#5A9BF6" />
-<text x="368.25314089035567" y="379" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 3.27 ms</text>
+<rect x="330" y="368" width="29.42" height="14" rx="4" fill="#5A9BF6" />
+<text x="369.4152737834221" y="379" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 3.39 ms</text>
 
-<rect x="330" y="386" width="31.35" height="14" rx="4" fill="#35C296" />
-<text x="371.3549383153213" y="397" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 3.63 ms</text>
-
-<text x="18" y="443" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="14">google/gemma-4-31B</text>
-<rect x="330" y="418" width="178.35" height="14" rx="4" fill="#5D6472" />
-<text x="518.349031883401" y="429" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 20.6 ms</text>
-
-<rect x="330" y="436" width="28.98" height="14" rx="4" fill="#5A9BF6" />
-<text x="368.97890964717215" y="447" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 3.35 ms</text>
-
-<rect x="330" y="454" width="31.16" height="14" rx="4" fill="#35C296" />
-<text x="371.1562159176216" y="465" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 3.61 ms</text>
-
-<text x="18" y="511" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="14">google/gemma-4-26B-A4B-it</text>
-<rect x="330" y="486" width="156.75" height="14" rx="4" fill="#5D6472" />
-<text x="496.7487712638631" y="497" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 18.1 ms</text>
-
-<rect x="330" y="504" width="28.48" height="14" rx="4" fill="#5A9BF6" />
-<text x="368.47778360079883" y="515" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 3.3 ms</text>
-
-<rect x="330" y="522" width="31.17" height="14" rx="4" fill="#35C296" />
-<text x="371.1734961261172" y="533" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 3.61 ms</text>
-
-<text x="18" y="579" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="14">google/gemma-4-26B-A4B</text>
-<rect x="330" y="554" width="183.38" height="14" rx="4" fill="#5D6472" />
-<text x="523.3775725556295" y="565" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 21.2 ms</text>
-
-<rect x="330" y="572" width="31.06" height="14" rx="4" fill="#5A9BF6" />
-<text x="371.0611747708956" y="583" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 3.6 ms</text>
-
-<rect x="330" y="590" width="30.33" height="14" rx="4" fill="#35C296" />
-<text x="370.3267659098313" y="601" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 3.51 ms</text>
-
-<text x="18" y="647" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="14">google/gemma-4-E4B-it</text>
-<rect x="330" y="622" width="144.94" height="14" rx="4" fill="#5D6472" />
-<text x="484.9377487570997" y="633" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 16.8 ms</text>
-
-<rect x="330" y="640" width="30.52" height="14" rx="4" fill="#5A9BF6" />
-<text x="370.51684820328325" y="651" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 3.53 ms</text>
-
-<rect x="330" y="658" width="30.66" height="14" rx="4" fill="#35C296" />
-<text x="370.6637299754961" y="669" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 3.55 ms</text>
-
-<text x="18" y="715" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="14">google/gemma-4-E4B</text>
-<rect x="330" y="690" width="169.96" height="14" rx="4" fill="#5D6472" />
-<text x="509.95949065877255" y="701" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 19.7 ms</text>
-
-<rect x="330" y="708" width="30.73" height="14" rx="4" fill="#5A9BF6" />
-<text x="370.73285080947863" y="719" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 3.56 ms</text>
-
-<rect x="330" y="726" width="32.68" height="14" rx="4" fill="#35C296" />
-<text x="372.676874265237" y="737" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 3.78 ms</text>
-
-<text x="18" y="783" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="14">google/gemma-4-E2B-it</text>
-<rect x="330" y="758" width="172.27" height="14" rx="4" fill="#5D6472" />
-<text x="512.2663984929392" y="769" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 19.9 ms</text>
-
-<rect x="330" y="776" width="31.18" height="14" rx="4" fill="#5A9BF6" />
-<text x="371.182136230365" y="787" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 3.61 ms</text>
-
-<rect x="330" y="794" width="30.74" height="14" rx="4" fill="#35C296" />
-<text x="370.7414909137264" y="805" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 3.56 ms</text>
-
-<text x="18" y="851" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="14">google/gemma-4-E2B</text>
-<rect x="330" y="826" width="173.87" height="14" rx="4" fill="#5D6472" />
-<text x="513.8734578830329" y="837" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">HF: 20.1 ms</text>
-
-<rect x="330" y="844" width="29.45" height="14" rx="4" fill="#5A9BF6" />
-<text x="369.44547527655413" y="855" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE oneshot: 3.41 ms</text>
-
-<rect x="330" y="862" width="31.02" height="14" rx="4" fill="#35C296" />
-<text x="371.0179742496565" y="873" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 3.59 ms</text>
+<rect x="330" y="386" width="33.05" height="14" rx="4" fill="#35C296" />
+<text x="373.0541871921182" y="397" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">IREE stream: 3.81 ms</text>
 
 </svg>

@@ -29,52 +29,14 @@ defmodule IREETokenizersBench.ModelMatrix do
       repos: ["mistralai/Ministral-3-3B-Reasoning-2512"]
     },
     %{
-      label: "bartowski/arcee-ai_Trinity-Large-Thinking-GGUF",
-      requested_repo: "bartowski/arcee-ai_Trinity-Large-Thinking-GGUF",
-      repos: [
-        "bartowski/arcee-ai_Trinity-Large-Thinking-GGUF",
-        "arcee-ai/Trinity-Large-Thinking"
-      ]
+      label: "arcee-ai/Trinity-Large-Preview",
+      requested_repo: "arcee-ai/Trinity-Large-Preview",
+      repos: ["arcee-ai/Trinity-Large-Preview"]
     },
     %{
       label: "google/gemma-4-31B-it",
       requested_repo: "google/gemma-4-31B-it",
       repos: ["google/gemma-4-31B-it"]
-    },
-    %{
-      label: "google/gemma-4-31B",
-      requested_repo: "google/gemma-4-31B",
-      repos: ["google/gemma-4-31B"]
-    },
-    %{
-      label: "google/gemma-4-26B-A4B-it",
-      requested_repo: "google/gemma-4-26B-A4B-it",
-      repos: ["google/gemma-4-26B-A4B-it"]
-    },
-    %{
-      label: "google/gemma-4-26B-A4B",
-      requested_repo: "google/gemma-4-26B-A4B",
-      repos: ["google/gemma-4-26B-A4B"]
-    },
-    %{
-      label: "google/gemma-4-E4B-it",
-      requested_repo: "google/gemma-4-E4B-it",
-      repos: ["google/gemma-4-E4B-it"]
-    },
-    %{
-      label: "google/gemma-4-E4B",
-      requested_repo: "google/gemma-4-E4B",
-      repos: ["google/gemma-4-E4B"]
-    },
-    %{
-      label: "google/gemma-4-E2B-it",
-      requested_repo: "google/gemma-4-E2B-it",
-      repos: ["google/gemma-4-E2B-it"]
-    },
-    %{
-      label: "google/gemma-4-E2B",
-      requested_repo: "google/gemma-4-E2B",
-      repos: ["google/gemma-4-E2B"]
     }
   ]
 
