@@ -1,0 +1,82 @@
+name: Release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build-assets:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-13
+            target: x86_64-apple-darwin
+          - runner: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    env:
+      IREE_TOKENIZERS_BUILD: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.1.1"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fetch deps
+        run: mix deps.get
+      - name: Build NIF
+        run: mix compile
+      - name: Package precompiled NIF
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(mix run -e 'IO.write(Mix.Project.config()[:version])')"
+          artifact="libiree_tokenizers_native-v${version}-nif-2.15-${{ matrix.target }}.so"
+          cp priv/native/iree_tokenizers_native.so "${artifact}"
+          tar -czf "${artifact}.tar.gz" "${artifact}"
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nif-${{ matrix.target }}
+          path: libiree_tokenizers_native-v*.tar.gz
+
+  checksums:
+    needs: build-assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download packaged NIF artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.1.1"
+      - name: Fetch deps
+        run: mix deps.get
+      - name: Generate checksum file
+        shell: bash
+        run: |
+          set -euo pipefail
+          mix run -e '
+            files =
+              Path.wildcard("artifacts/**/*.tar.gz")
+              |> Enum.map(fn path ->
+                hash = :crypto.hash(:sha256, File.read!(path)) |> Base.encode16(case: :lower)
+                %{path: path, checksum: hash, checksum_algo: :sha256}
+              end)
+
+            RustlerPrecompiled.write_checksum!(IREE.Tokenizers.Native, files)
+          '
+      - name: Upload checksum artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustler-checksum
+          path: checksum-Elixir.IREE.Tokenizers.Native.exs

@@ -223,6 +223,9 @@ defmodule IREE.Tokenizers.Tokenizer do
           404 ->
             {:error, {:not_found, "resource not found"}}
 
+          status when status in [401, 403] ->
+            {:error, {:permission_denied, "access denied"}}
+
           other ->
             {:error,
              {:invalid_argument,

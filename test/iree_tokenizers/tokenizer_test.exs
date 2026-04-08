@@ -5,7 +5,9 @@ defmodule IREETokenizers.TokenizerTest do
 
   defmodule MockHTTPClient do
     def request(opts) do
-      Agent.get_and_update(__MODULE__, fn state ->
+      agent = Keyword.fetch!(opts, :agent)
+
+      Agent.get_and_update(agent, fn state ->
         state = Map.update(state, :requests, [opts], &[opts | &1])
 
         method = Keyword.fetch!(opts, :method)
@@ -24,19 +26,16 @@ defmodule IREETokenizers.TokenizerTest do
   end
 
   setup do
-    {:ok, _pid} =
-      Agent.start_link(
-        fn ->
-          %{
-            requests: [],
-            head_response: {:error, :unset},
-            get_response: {:error, :unset}
-          }
-        end,
-        name: MockHTTPClient
-      )
+    {:ok, agent} =
+      Agent.start_link(fn ->
+        %{
+          requests: [],
+          head_response: {:error, :unset},
+          get_response: {:error, :unset}
+        }
+      end)
 
-    :ok
+    {:ok, agent: agent}
   end
 
   test "loads from buffer and file for bpe fixture" do
@@ -143,10 +142,10 @@ defmodule IREETokenizers.TokenizerTest do
              Tokenizer.encode(tokenizer, {"hello", "world"})
   end
 
-  test "downloads and caches pretrained tokenizers using HEAD etag" do
+  test "downloads and caches pretrained tokenizers using HEAD etag", %{agent: agent} do
     body = File.read!(fixture_path("bpe_bytelevel_minimal.json"))
 
-    Agent.update(MockHTTPClient, fn _ ->
+    Agent.update(agent, fn _ ->
       %{
         requests: [],
         head_response: {:ok, %{status: 200, headers: [{"etag", "etag-123"}], body: ""}},
@@ -162,7 +161,7 @@ defmodule IREETokenizers.TokenizerTest do
     assert {:ok, tokenizer} =
              Tokenizer.from_pretrained("owner/repo",
                cache_dir: cache_dir,
-               http_client: {MockHTTPClient, []},
+               http_client: {MockHTTPClient, agent: agent},
                token: "secret-token"
              )
 
@@ -171,13 +170,13 @@ defmodule IREETokenizers.TokenizerTest do
     assert {:ok, tokenizer2} =
              Tokenizer.from_pretrained("owner/repo",
                cache_dir: cache_dir,
-               http_client: {MockHTTPClient, []}
+               http_client: {MockHTTPClient, agent: agent}
              )
 
     assert Tokenizer.vocab_size(tokenizer2) == 112
 
     requests =
-      Agent.get(MockHTTPClient, fn state ->
+      Agent.get(agent, fn state ->
         Enum.reverse(state.requests)
       end)
 
@@ -188,10 +187,10 @@ defmodule IREETokenizers.TokenizerTest do
     assert {"authorization", "Bearer secret-token"} in Enum.at(requests, 1)[:headers]
   end
 
-  test "falls back to get when head fails" do
+  test "falls back to get when head fails", %{agent: agent} do
     body = File.read!(fixture_path("minimal_wordpiece.json"))
 
-    Agent.update(MockHTTPClient, fn _ ->
+    Agent.update(agent, fn _ ->
       %{
         requests: [],
         head_response: {:error, :timeout},
@@ -207,10 +206,52 @@ defmodule IREETokenizers.TokenizerTest do
     assert {:ok, tokenizer} =
              Tokenizer.from_pretrained("owner/repo",
                cache_dir: cache_dir,
-               http_client: {MockHTTPClient, []}
+               http_client: {MockHTTPClient, agent: agent}
              )
 
     assert Tokenizer.model_type(tokenizer) == "WordPiece"
+  end
+
+  test "maps a 404 download to not_found", %{agent: agent} do
+    Agent.update(agent, fn _ ->
+      %{
+        requests: [],
+        head_response: {:ok, %{status: 404, headers: [], body: "missing"}},
+        get_response: {:ok, %{status: 404, headers: [], body: "missing"}}
+      }
+    end)
+
+    cache_dir =
+      Path.join(System.tmp_dir!(), "iree-tokenizers-#{System.unique_integer([:positive])}")
+
+    File.rm_rf!(cache_dir)
+
+    assert {:error, {:not_found, "resource not found"}} =
+             Tokenizer.from_pretrained("owner/missing",
+               cache_dir: cache_dir,
+               http_client: {MockHTTPClient, agent: agent}
+             )
+  end
+
+  test "maps a 403 download to permission_denied", %{agent: agent} do
+    Agent.update(agent, fn _ ->
+      %{
+        requests: [],
+        head_response: {:ok, %{status: 403, headers: [], body: "forbidden"}},
+        get_response: {:ok, %{status: 403, headers: [], body: "forbidden"}}
+      }
+    end)
+
+    cache_dir =
+      Path.join(System.tmp_dir!(), "iree-tokenizers-#{System.unique_integer([:positive])}")
+
+    File.rm_rf!(cache_dir)
+
+    assert {:error, {:permission_denied, "access denied"}} =
+             Tokenizer.from_pretrained("owner/private",
+               cache_dir: cache_dir,
+               http_client: {MockHTTPClient, agent: agent}
+             )
   end
 
   defp load_fixture!(name) do

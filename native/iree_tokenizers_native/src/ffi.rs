@@ -200,6 +200,13 @@ unsafe extern "C" {
     pub fn iree_status_code_string(code: u32) -> *const c_char;
     pub fn iree_status_ignore(status: iree_status_t) -> iree_status_t;
     pub fn iree_status_consume_code(status: iree_status_t) -> u32;
+    pub fn iree_status_to_string(
+        status: iree_status_t,
+        allocator: *const iree_allocator_t,
+        out_buffer: *mut *mut c_char,
+        out_buffer_length: *mut usize,
+    ) -> bool;
+    pub fn iree_allocator_free(allocator: iree_allocator_t, ptr: *mut c_void);
 
     pub fn iree_tokenizer_from_huggingface_json(
         json: iree_string_view_t,
@@ -318,6 +325,7 @@ unsafe extern "C" {
         token_id: i32,
     ) -> iree_string_view_t;
 
+    pub fn iree_tokenizer_vocab_capacity(vocab: *const iree_tokenizer_vocab_t) -> usize;
     pub fn iree_tokenizer_vocab_token_count(vocab: *const iree_tokenizer_vocab_t) -> usize;
     pub fn iree_tokenizer_vocab_special_ids(
         vocab: *const iree_tokenizer_vocab_t,
@@ -380,4 +388,5 @@ pub fn transform_buffer_oneshot_size(text_size: usize) -> usize {
         .saturating_mul(IREE_TOKENIZER_TRANSFORM_BUFFER_EXPANSION_FACTOR)
         .max(IREE_TOKENIZER_TRANSFORM_BUFFER_MIN_SIZE)
         .next_power_of_two()
+        .min(IREE_TOKENIZER_TRANSFORM_BUFFER_MAX_SIZE)
 }

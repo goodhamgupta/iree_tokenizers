@@ -266,7 +266,14 @@ pub fn tokenizer_decode_batch(
         let mut results = Vec::with_capacity(items.len());
         for (index, item) in items.iter().enumerate() {
             results.push(
-                String::from_utf8_lossy(&output_bufs[index][..item.out_text_length]).into_owned(),
+                String::from_utf8(output_bufs[index][..item.out_text_length].to_vec()).map_err(
+                    |err| {
+                        TokenizerError::new(
+                            ErrorKind::Internal,
+                            format!("invalid UTF-8 in decode batch output: {err}"),
+                        )
+                    },
+                )?,
             );
         }
         return Ok(results);
@@ -299,6 +306,10 @@ pub fn tokenizer_id_to_token(tokenizer: Tokenizer, id: i32) -> Option<String> {
     }
 
     let vocab = unsafe { ffi::iree_tokenizer_vocab(tokenizer.resource.ptr) };
+    let capacity = unsafe { ffi::iree_tokenizer_vocab_capacity(vocab) };
+    if id as usize >= capacity {
+        return None;
+    }
     let view = unsafe { ffi::iree_tokenizer_vocab_token_text(vocab, id) };
     (!view.data.is_null() && view.size > 0).then(|| string_view_to_string(view))
 }
@@ -466,7 +477,12 @@ pub fn decode_impl(
 
         check_status(status)?;
         bytes.truncate(written);
-        return Ok(String::from_utf8_lossy(&bytes).into_owned());
+        return String::from_utf8(bytes).map_err(|err| {
+            TokenizerError::new(
+                ErrorKind::Internal,
+                format!("invalid UTF-8 in decode output: {err}"),
+            )
+        });
     }
 }
 

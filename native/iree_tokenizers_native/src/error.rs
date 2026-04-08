@@ -77,11 +77,9 @@ pub fn check_status(status: ffi::iree_status_t) -> Result<()> {
         return Ok(());
     }
 
+    let message = status_message(status);
     let code = unsafe { ffi::iree_status_consume_code(status) } as u32;
-    Err(TokenizerError::new(
-        code_to_kind(code),
-        status_code_message(code),
-    ))
+    Err(TokenizerError::new(code_to_kind(code), message))
 }
 
 pub fn is_resource_exhausted(status: ffi::iree_status_t) -> bool {
@@ -102,6 +100,28 @@ pub fn status_code_message(code: u32) -> String {
     unsafe { CStr::from_ptr(ptr) }
         .to_string_lossy()
         .into_owned()
+}
+
+fn status_message(status: ffi::iree_status_t) -> String {
+    let allocator = ffi::system_allocator();
+    let mut buffer = std::ptr::null_mut();
+    let mut length = 0usize;
+
+    let formatted =
+        unsafe { ffi::iree_status_to_string(status, &allocator, &mut buffer, &mut length) };
+
+    if formatted && !buffer.is_null() {
+        let bytes = unsafe { std::slice::from_raw_parts(buffer as *const u8, length) };
+        let message = String::from_utf8(bytes.to_vec()).unwrap_or_else(|_| {
+            let code = status as usize & ffi::IREE_STATUS_CODE_MASK as usize;
+            status_code_message(code as u32)
+        });
+        unsafe { ffi::iree_allocator_free(allocator, buffer.cast()) };
+        message
+    } else {
+        let code = status as usize & ffi::IREE_STATUS_CODE_MASK as usize;
+        status_code_message(code as u32)
+    }
 }
 
 fn code_to_kind(code: u32) -> ErrorKind {

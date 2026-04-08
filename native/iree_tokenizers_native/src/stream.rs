@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use rustler::{NifStruct, ResourceArc};
 
 use crate::{
-    error::{check_status, Result},
+    error::{check_status, is_resource_exhausted, ErrorKind, Result, TokenizerError},
     ffi,
     tokenizer::{invalid_argument, TokenizerResource},
 };
@@ -68,22 +68,8 @@ impl EncodeStreamState {
         let mut ids_buffer = vec![0i32; 1024];
 
         while offset < chunk.len() {
-            let mut consumed = 0usize;
-            let mut produced = 0usize;
-            check_status(unsafe {
-                ffi::iree_tokenizer_encode_state_feed(
-                    self.state,
-                    ffi::make_string_view(&chunk[offset..]),
-                    ffi::iree_tokenizer_token_output_t {
-                        capacity: ids_buffer.len(),
-                        token_ids: ids_buffer.as_mut_ptr(),
-                        token_offsets: std::ptr::null_mut(),
-                        type_ids: std::ptr::null_mut(),
-                    },
-                    &mut consumed,
-                    &mut produced,
-                )
-            })?;
+            let (consumed, produced) =
+                encode_feed_once(self.state, &chunk[offset..], &mut ids_buffer)?;
 
             if consumed == 0 && produced == 0 {
                 return Err(invalid_argument("encode stream made no progress"));
@@ -97,22 +83,7 @@ impl EncodeStreamState {
         }
 
         loop {
-            let mut consumed = 0usize;
-            let mut produced = 0usize;
-            check_status(unsafe {
-                ffi::iree_tokenizer_encode_state_feed(
-                    self.state,
-                    ffi::make_string_view(&[]),
-                    ffi::iree_tokenizer_token_output_t {
-                        capacity: ids_buffer.len(),
-                        token_ids: ids_buffer.as_mut_ptr(),
-                        token_offsets: std::ptr::null_mut(),
-                        type_ids: std::ptr::null_mut(),
-                    },
-                    &mut consumed,
-                    &mut produced,
-                )
-            })?;
+            let (_consumed, produced) = encode_feed_once(self.state, &[], &mut ids_buffer)?;
 
             if produced == 0 {
                 break;
@@ -125,21 +96,32 @@ impl EncodeStreamState {
 
     fn finalize(self) -> Result<Vec<i32>> {
         let mut ids = vec![0i32; 256];
-        let mut produced = 0usize;
-        check_status(unsafe {
-            ffi::iree_tokenizer_encode_state_finalize(
-                self.state,
-                ffi::iree_tokenizer_token_output_t {
-                    capacity: ids.len(),
-                    token_ids: ids.as_mut_ptr(),
-                    token_offsets: std::ptr::null_mut(),
-                    type_ids: std::ptr::null_mut(),
-                },
-                &mut produced,
-            )
-        })?;
-        ids.truncate(produced);
-        Ok(ids)
+
+        loop {
+            let mut produced = 0usize;
+            let status = unsafe {
+                ffi::iree_tokenizer_encode_state_finalize(
+                    self.state,
+                    ffi::iree_tokenizer_token_output_t {
+                        capacity: ids.len(),
+                        token_ids: ids.as_mut_ptr(),
+                        token_offsets: std::ptr::null_mut(),
+                        type_ids: std::ptr::null_mut(),
+                    },
+                    &mut produced,
+                )
+            };
+
+            if is_resource_exhausted(status) {
+                unsafe { ffi::iree_status_ignore(status) };
+                ids.resize(ids.len() * 2, 0);
+                continue;
+            }
+
+            check_status(status)?;
+            ids.truncate(produced);
+            return Ok(ids);
+        }
     }
 }
 
@@ -199,27 +181,22 @@ impl DecodeStreamState {
         let mut text_buffer = vec![0u8; ffi::IREE_TOKENIZER_DECODE_OUTPUT_RECOMMENDED_SIZE];
 
         while offset < ids.len() {
-            let mut consumed = 0usize;
-            let mut written = 0usize;
-            check_status(unsafe {
-                ffi::iree_tokenizer_decode_state_feed(
-                    self.state,
-                    ffi::iree_tokenizer_token_id_list_t {
-                        count: ids.len() - offset,
-                        values: ids[offset..].as_ptr(),
-                    },
-                    ffi::make_mutable_string_view(&mut text_buffer),
-                    &mut consumed,
-                    &mut written,
-                )
-            })?;
+            let (consumed, written) =
+                decode_feed_once(self.state, &ids[offset..], &mut text_buffer)?;
 
             if consumed == 0 && written == 0 {
                 return Err(invalid_argument("decode stream made no progress"));
             }
 
             if written > 0 {
-                output.push_str(&String::from_utf8_lossy(&text_buffer[..written]));
+                output.push_str(&String::from_utf8(text_buffer[..written].to_vec()).map_err(
+                    |err| {
+                        TokenizerError::new(
+                            ErrorKind::Internal,
+                            format!("invalid UTF-8 in decode stream output: {err}"),
+                        )
+                    },
+                )?);
             }
 
             offset += consumed;
@@ -230,16 +207,31 @@ impl DecodeStreamState {
 
     fn finalize(self) -> Result<String> {
         let mut text_buffer = vec![0u8; ffi::IREE_TOKENIZER_DECODE_OUTPUT_RECOMMENDED_SIZE];
-        let mut written = 0usize;
-        check_status(unsafe {
-            ffi::iree_tokenizer_decode_state_finalize(
-                self.state,
-                ffi::make_mutable_string_view(&mut text_buffer),
-                &mut written,
-            )
-        })?;
 
-        Ok(String::from_utf8_lossy(&text_buffer[..written]).into_owned())
+        loop {
+            let mut written = 0usize;
+            let status = unsafe {
+                ffi::iree_tokenizer_decode_state_finalize(
+                    self.state,
+                    ffi::make_mutable_string_view(&mut text_buffer),
+                    &mut written,
+                )
+            };
+
+            if is_resource_exhausted(status) {
+                unsafe { ffi::iree_status_ignore(status) };
+                text_buffer.resize(text_buffer.len() * 2, 0);
+                continue;
+            }
+
+            check_status(status)?;
+            return String::from_utf8(text_buffer[..written].to_vec()).map_err(|err| {
+                TokenizerError::new(
+                    ErrorKind::Internal,
+                    format!("invalid UTF-8 in decode stream output: {err}"),
+                )
+            });
+        }
     }
 }
 
@@ -273,7 +265,7 @@ pub struct DecodeStream {
 
 #[rustler::nif(schedule = "DirtyCpu")]
 pub fn encode_stream_feed(stream: EncodeStream, chunk: rustler::Binary) -> Result<Vec<i32>> {
-    let mut guard = stream.resource.inner.lock().expect("encode stream lock");
+    let mut guard = recover_lock(stream.resource.inner.lock());
     let state = guard
         .as_mut()
         .ok_or_else(|| invalid_argument("stream already finalized"))?;
@@ -282,7 +274,7 @@ pub fn encode_stream_feed(stream: EncodeStream, chunk: rustler::Binary) -> Resul
 
 #[rustler::nif(schedule = "DirtyCpu")]
 pub fn encode_stream_finalize(stream: EncodeStream) -> Result<Vec<i32>> {
-    let mut guard = stream.resource.inner.lock().expect("encode stream lock");
+    let mut guard = recover_lock(stream.resource.inner.lock());
     let state = guard
         .take()
         .ok_or_else(|| invalid_argument("stream already finalized"))?;
@@ -291,7 +283,7 @@ pub fn encode_stream_finalize(stream: EncodeStream) -> Result<Vec<i32>> {
 
 #[rustler::nif(schedule = "DirtyCpu")]
 pub fn decode_stream_feed(stream: DecodeStream, ids: Vec<i32>) -> Result<String> {
-    let mut guard = stream.resource.inner.lock().expect("decode stream lock");
+    let mut guard = recover_lock(stream.resource.inner.lock());
     let state = guard
         .as_mut()
         .ok_or_else(|| invalid_argument("stream already finalized"))?;
@@ -300,9 +292,93 @@ pub fn decode_stream_feed(stream: DecodeStream, ids: Vec<i32>) -> Result<String>
 
 #[rustler::nif(schedule = "DirtyCpu")]
 pub fn decode_stream_finalize(stream: DecodeStream) -> Result<String> {
-    let mut guard = stream.resource.inner.lock().expect("decode stream lock");
+    let mut guard = recover_lock(stream.resource.inner.lock());
     let state = guard
         .take()
         .ok_or_else(|| invalid_argument("stream already finalized"))?;
     state.finalize()
+}
+
+fn recover_lock<T>(
+    lock: std::sync::LockResult<std::sync::MutexGuard<'_, T>>,
+) -> std::sync::MutexGuard<'_, T> {
+    lock.unwrap_or_else(|err| err.into_inner())
+}
+
+fn encode_feed_once(
+    state: *mut ffi::iree_tokenizer_encode_state_t,
+    chunk: &[u8],
+    ids_buffer: &mut Vec<i32>,
+) -> Result<(usize, usize)> {
+    loop {
+        let mut consumed = 0usize;
+        let mut produced = 0usize;
+        let status = unsafe {
+            ffi::iree_tokenizer_encode_state_feed(
+                state,
+                ffi::make_string_view(chunk),
+                ffi::iree_tokenizer_token_output_t {
+                    capacity: ids_buffer.len(),
+                    token_ids: ids_buffer.as_mut_ptr(),
+                    token_offsets: std::ptr::null_mut(),
+                    type_ids: std::ptr::null_mut(),
+                },
+                &mut consumed,
+                &mut produced,
+            )
+        };
+
+        if is_resource_exhausted(status) {
+            unsafe { ffi::iree_status_ignore(status) };
+            ids_buffer.resize(ids_buffer.len() * 2, 0);
+            continue;
+        }
+
+        check_status(status)?;
+
+        if consumed == 0 && produced == 0 && !chunk.is_empty() {
+            ids_buffer.resize(ids_buffer.len() * 2, 0);
+            continue;
+        }
+
+        return Ok((consumed, produced));
+    }
+}
+
+fn decode_feed_once(
+    state: *mut ffi::iree_tokenizer_decode_state_t,
+    ids: &[i32],
+    text_buffer: &mut Vec<u8>,
+) -> Result<(usize, usize)> {
+    loop {
+        let mut consumed = 0usize;
+        let mut written = 0usize;
+        let status = unsafe {
+            ffi::iree_tokenizer_decode_state_feed(
+                state,
+                ffi::iree_tokenizer_token_id_list_t {
+                    count: ids.len(),
+                    values: ids.as_ptr(),
+                },
+                ffi::make_mutable_string_view(text_buffer.as_mut_slice()),
+                &mut consumed,
+                &mut written,
+            )
+        };
+
+        if is_resource_exhausted(status) {
+            unsafe { ffi::iree_status_ignore(status) };
+            text_buffer.resize(text_buffer.len() * 2, 0);
+            continue;
+        }
+
+        check_status(status)?;
+
+        if consumed == 0 && written == 0 && !ids.is_empty() {
+            text_buffer.resize(text_buffer.len() * 2, 0);
+            continue;
+        }
+
+        return Ok((consumed, written));
+    }
 }

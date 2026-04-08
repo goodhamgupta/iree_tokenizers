@@ -47,17 +47,7 @@ defmodule IREETokenizers.MixProject do
       licenses: ["Apache-2.0"],
       maintainers: ["Shubham Gupta"],
       links: %{"GitHub" => @source_url},
-      files: [
-        "lib",
-        "native",
-        "scripts",
-        "test/fixtures",
-        ".formatter.exs",
-        "mix.exs",
-        "README.md",
-        "LICENSE",
-        "checksum-*.exs"
-      ]
+      files: package_files()
     ]
   end
 
@@ -78,5 +68,38 @@ defmodule IREETokenizers.MixProject do
         ]
       ]
     ]
+  end
+
+  defp package_files do
+    [
+      ".formatter.exs",
+      ".tool-versions",
+      "LICENSE",
+      "README.md",
+      "mix.exs",
+      "mix.lock",
+      "scripts/update_iree_bundle.sh",
+      "lib/iree/tokenizers.ex",
+      "lib/iree/tokenizers/decode_stream.ex",
+      "lib/iree/tokenizers/encode_stream.ex",
+      "lib/iree/tokenizers/encoding.ex",
+      "lib/iree/tokenizers/http_client.ex",
+      "lib/iree/tokenizers/native.ex",
+      "lib/iree/tokenizers/tokenizer.ex",
+      "native/iree_tokenizers_native/Cargo.lock",
+      "native/iree_tokenizers_native/Cargo.toml",
+      "native/iree_tokenizers_native/build.rs",
+      "native/iree_tokenizers_native/sources/base_sources.txt",
+      "native/iree_tokenizers_native/sources/tokenizer_sources.txt",
+      "native/iree_tokenizers_native/src/error.rs",
+      "native/iree_tokenizers_native/src/ffi.rs",
+      "native/iree_tokenizers_native/src/lib.rs",
+      "native/iree_tokenizers_native/src/stream.rs",
+      "native/iree_tokenizers_native/src/tokenizer.rs",
+      "native/iree_tokenizers_native/vendor/IREE_COMMIT",
+      "native/iree_tokenizers_native/vendor/iree_tokenizer_src/IREE-LICENSE"
+    ] ++
+      Path.wildcard("native/iree_tokenizers_native/vendor/iree_tokenizer_src/iree/**/*.{c,h}") ++
+      Path.wildcard("test/fixtures/*")
   end
 end
