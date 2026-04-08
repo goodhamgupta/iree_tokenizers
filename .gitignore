@@ -1,0 +1,10 @@
+/.elixir_ls/
+/.mix/
+/_build/
+/cover/
+/deps/
+/doc/
+/erl_crash.dump
+/native/iree_tokenizers_native/target/
+/priv/native/
+/checksum-*.exs
