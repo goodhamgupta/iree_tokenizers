@@ -64,7 +64,13 @@ pub fn tokenizer_from_buffer(buffer: rustler::Binary) -> Result<Tokenizer> {
     };
     check_status(status)?;
 
-    let model_type = string_view_to_string(unsafe { ffi::iree_tokenizer_model_type_name(raw) });
+    let model_type = string_view_to_string(unsafe { ffi::iree_tokenizer_model_type_name(raw) })
+        .map_err(|err| {
+            TokenizerError::new(
+                ErrorKind::Internal,
+                format!("invalid UTF-8 in tokenizer metadata: {err}"),
+            )
+        })?;
 
     Ok(Tokenizer {
         resource: ResourceArc::new(TokenizerResource {
@@ -311,7 +317,11 @@ pub fn tokenizer_id_to_token(tokenizer: Tokenizer, id: i32) -> Option<String> {
         return None;
     }
     let view = unsafe { ffi::iree_tokenizer_vocab_token_text(vocab, id) };
-    (!view.data.is_null() && view.size > 0).then(|| string_view_to_string(view))
+    if view.data.is_null() || view.size == 0 {
+        None
+    } else {
+        string_view_to_string(view).ok()
+    }
 }
 
 #[rustler::nif]
@@ -535,13 +545,15 @@ fn decode_flags(skip_special_tokens: bool) -> u32 {
     }
 }
 
-fn string_view_to_string(view: ffi::iree_string_view_t) -> String {
+fn string_view_to_string(
+    view: ffi::iree_string_view_t,
+) -> std::result::Result<String, std::string::FromUtf8Error> {
     if view.data.is_null() || view.size == 0 {
-        return String::new();
+        return Ok(String::new());
     }
 
     let bytes = unsafe { slice::from_raw_parts(view.data as *const u8, view.size) };
-    String::from_utf8_lossy(bytes).into_owned()
+    String::from_utf8(bytes.to_vec())
 }
 
 fn special_id(
