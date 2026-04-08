@@ -10,7 +10,8 @@ defmodule IREE.Tokenizers.Native do
     crate: "iree_tokenizers_native",
     version: version,
     base_url: "#{github_url}/releases/download/v#{version}",
-    force_build: System.get_env("IREE_TOKENIZERS_BUILD") in ["1", "true"]
+    force_build:
+      Mix.env() in [:dev, :test] or System.get_env("IREE_TOKENIZERS_BUILD") in ["1", "true"]
 
   def tokenizer_from_buffer(_buffer), do: err()
   def tokenizer_encode(_tokenizer, _text, _opts), do: err()
