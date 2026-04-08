@@ -50,22 +50,58 @@ defmodule IREE.Tokenizers.Tokenizer do
     {:ok, app_version} = :application.get_key(:iree_tokenizers, :vsn)
     app_version = List.to_string(app_version)
 
-    url = "https://huggingface.co/#{repo_id}/resolve/#{opts[:revision]}/tokenizer.json"
-
     headers =
       [{"user-agent", "iree_tokenizers/#{app_version}"}]
       |> maybe_put_auth(opts[:token])
 
-    with {:ok, response} <-
-           get_pretrained_tokenizer(
-             http_client,
-             http_opts,
-             url,
-             headers,
-             opts[:cache_dir],
-             opts[:use_cache]
-           ) do
-      from_buffer(response.body)
+    url = "/#{repo_id}/resolve/#{opts[:revision]}/tokenizer.json"
+
+    http_opts =
+      http_opts
+      |> Keyword.put_new(:base_url, "https://huggingface.co")
+      |> Keyword.put(:url, url)
+      |> Keyword.put(:method, :get)
+      |> Keyword.update(:headers, headers, fn existing -> existing ++ headers end)
+
+    file_path_fun = fn etag ->
+      Path.join(opts[:cache_dir], entry_filename(url, etag))
+    end
+
+    if opts[:use_cache] do
+      case request(http_client, Keyword.put(http_opts, :method, :head)) do
+        {:ok, response} ->
+          etag = fetch_etag(response.headers)
+          file_path = file_path_fun.(etag)
+
+          if File.exists?(file_path) do
+            from_file(file_path)
+          else
+            with {:ok, response} <- request(http_client, http_opts) do
+              File.mkdir_p!(opts[:cache_dir])
+              File.write!(file_path, response.body)
+              from_file(file_path)
+            end
+          end
+
+        {:error, _reason} ->
+          with {:ok, response} <- request(http_client, http_opts) do
+            etag = fetch_etag(response.headers)
+            file_path = file_path_fun.(etag)
+
+            File.mkdir_p!(opts[:cache_dir])
+            File.write!(file_path, response.body)
+            from_file(file_path)
+          end
+      end
+    else
+      with {:ok, response} <- request(http_client, http_opts) do
+        etag = fetch_etag(response.headers)
+        file_path = file_path_fun.(etag)
+
+        File.mkdir_p!(opts[:cache_dir])
+        File.write!(file_path, response.body)
+        from_file(file_path)
+      end
     end
   end
 
@@ -170,93 +206,46 @@ defmodule IREE.Tokenizers.Tokenizer do
   defp maybe_put_auth(headers, nil), do: headers
   defp maybe_put_auth(headers, token), do: [{"authorization", "Bearer #{token}"} | headers]
 
-  defp get_pretrained_tokenizer(http_client, http_opts, url, headers, cache_dir, use_cache) do
-    File.mkdir_p!(cache_dir)
-
-    case maybe_head(http_client, http_opts, url, headers, use_cache) do
-      {:ok, %{status: status, headers: response_headers}} when status in 200..299 ->
-        case fetch_header(response_headers, "etag") do
-          {:ok, etag} ->
-            cache_path = Path.join(cache_dir, cache_key(url, etag))
-
-            if use_cache and File.exists?(cache_path) do
-              {:ok, %{status: 200, headers: response_headers, body: File.read!(cache_path)}}
-            else
-              get_and_cache(http_client, http_opts, url, headers, cache_path)
-            end
-
-          :error ->
-            get_and_cache(
-              http_client,
-              http_opts,
-              url,
-              headers,
-              Path.join(cache_dir, fallback_cache_key(url))
-            )
-        end
-
-      {:ok, %{status: status, body: body}} ->
-        {:error, {:invalid_argument, "download failed with status #{status}: #{inspect(body)}"}}
-
-      {:error, _reason} ->
-        get_and_cache(
-          http_client,
-          http_opts,
-          url,
-          headers,
-          Path.join(cache_dir, fallback_cache_key(url))
-        )
+  defp fetch_etag(headers) do
+    case List.keyfind(headers, "etag", 0) do
+      {_, etag} -> etag
+      nil -> "no-etag"
     end
   end
 
-  defp maybe_head(http_client, http_opts, url, headers, true) do
-    request_opts =
-      http_opts
-      |> Keyword.put(:url, url)
-      |> Keyword.put(:headers, headers)
-      |> Keyword.put(:method, :head)
+  defp request(http_client, http_opts) do
+    case http_client.request(http_opts) do
+      {:ok, response} ->
+        case response.status do
+          status when status in 200..299 ->
+            {:ok, response}
 
-    http_client.request(request_opts)
-  end
+          404 ->
+            {:error, {:not_found, "resource not found"}}
 
-  defp maybe_head(_http_client, _http_opts, _url, _headers, false), do: {:error, :disabled}
-
-  defp get_and_cache(http_client, http_opts, url, headers, cache_path) do
-    request_opts =
-      http_opts
-      |> Keyword.put(:url, url)
-      |> Keyword.put(:headers, headers)
-      |> Keyword.put(:method, :get)
-
-    with {:ok, %{status: status} = response} when status in 200..299 <-
-           http_client.request(request_opts) do
-      File.write!(cache_path, response.body)
-      {:ok, response}
-    else
-      {:ok, %{status: status, body: body}} ->
-        {:error, {:invalid_argument, "download failed with status #{status}: #{inspect(body)}"}}
+          other ->
+            {:error,
+             {:invalid_argument,
+              "download of pretrained file failed with status #{other}. Response: #{inspect(response.body)}"}}
+        end
 
       {:error, reason} ->
         {:error, {:internal, "download failed: #{inspect(reason)}"}}
     end
   end
 
-  defp fetch_header(headers, key) do
-    case List.keyfind(headers, key, 0) do
-      {_, value} -> {:ok, value}
-      nil -> :error
-    end
+  defp entry_filename(url, etag) do
+    encode_url(url) <> "." <> encode_etag(etag)
   end
 
-  defp cache_key(url, etag) do
-    [url, etag]
-    |> Enum.join(":")
+  defp encode_url(url) do
+    url
     |> :erlang.md5()
-    |> Base.encode16(case: :lower)
+    |> Base.encode32(case: :lower, padding: false)
   end
 
-  defp fallback_cache_key(url) do
-    "fallback-" <> cache_key(url, "no-etag")
+  defp encode_etag(etag) do
+    Base.encode32(etag, case: :lower, padding: false)
   end
 end
 

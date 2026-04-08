@@ -11,3 +11,5 @@
 /bench/.elixir_ls/
 /bench/_build/
 /bench/deps/
+/bench/results/*
+!/bench/results/.gitkeep

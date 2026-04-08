@@ -1,0 +1,307 @@
+defmodule IREETokenizersBench.Support do
+  alias IREE.Tokenizers.EncodeStream
+  alias IREE.Tokenizers.Tokenizer, as: IREETokenizer
+  alias Tokenizers.Tokenizer, as: HFTokenizer
+
+  @default_chunk_bytes 16_384
+
+  def benchmark_corpus(byte_target \\ 512_000) do
+    paragraph =
+      "Tokenization performance matters for real-time inference, long-context prompting, retrieval pipelines, and interactive developer tooling. "
+
+    do_benchmark_corpus(paragraph, byte_target, [])
+    |> IO.iodata_to_binary()
+  end
+
+  def time_ms(fun, repeats \\ 5) do
+    _ = timed_call(fun)
+
+    1..repeats
+    |> Enum.map(fn _ -> timed_call(fun) end)
+    |> Enum.sort()
+    |> median()
+  end
+
+  def iree_stream_encode_ms(tokenizer, corpus, chunk_bytes \\ @default_chunk_bytes) do
+    time_ms(fn ->
+      {:ok, stream} = EncodeStream.new(tokenizer, add_special_tokens: false)
+
+      corpus
+      |> chunk_binary(chunk_bytes)
+      |> Enum.each(fn chunk ->
+        {:ok, _ids} = EncodeStream.feed(stream, chunk)
+      end)
+
+      {:ok, _final_ids} = EncodeStream.finalize(stream)
+      :ok
+    end)
+  end
+
+  def benchmark_throughput(label, tokens_per_run, fun, warmup_seconds, measure_seconds) do
+    _ = run_for(fun, tokens_per_run, warmup_seconds)
+    measured = run_for(fun, tokens_per_run, measure_seconds)
+
+    %{
+      label: label,
+      tokens_per_second: measured.tokens / measured.seconds,
+      tokens: measured.tokens,
+      runs: measured.runs,
+      seconds: measured.seconds
+    }
+  end
+
+  def count_iree_ids(encodings),
+    do: Enum.reduce(encodings, 0, fn encoding, acc -> acc + length(encoding.ids) end)
+
+  def count_hf_ids(encodings),
+    do:
+      Enum.reduce(encodings, 0, fn encoding, acc ->
+        acc + length(Tokenizers.Encoding.get_ids(encoding))
+      end)
+
+  def count_id_lists(id_lists), do: Enum.reduce(id_lists, 0, fn ids, acc -> acc + length(ids) end)
+
+  def format_tokens_per_second(value) when value >= 1_000_000,
+    do: "#{Float.round(value / 1_000_000, 1)}M tokens/sec"
+
+  def format_tokens_per_second(value) when value >= 1_000,
+    do: "#{Float.round(value / 1_000, 1)}K tokens/sec"
+
+  def format_tokens_per_second(value), do: "#{Float.round(value, 1)} tokens/sec"
+
+  def format_ms(value) do
+    rounded =
+      cond do
+        value >= 100 -> Float.round(value, 0)
+        value >= 10 -> Float.round(value, 1)
+        true -> Float.round(value, 2)
+      end
+
+    "#{rounded} ms"
+  end
+
+  def render_throughput_svg(path, subtitle, bars) do
+    width = 800
+    height = 120 + length(bars) * 56
+    chart_left = 170
+    chart_top = 24
+    row_gap = 56
+    bar_height = 32
+    chart_width = 590
+    max_value = Enum.max_by(bars, & &1.value).value
+
+    rows =
+      bars
+      |> Enum.sort_by(& &1.value, :desc)
+      |> Enum.with_index()
+      |> Enum.map(fn {bar, index} ->
+        y = chart_top + index * row_gap
+        bar_width = chart_width * (bar.value / max_value)
+        label = format_tokens_per_second(bar.value)
+        inside = bar_width > 190
+        value_x = if inside, do: chart_left + bar_width - 155, else: chart_left + bar_width + 14
+        value_fill = if inside, do: "#F7FAFF", else: "#A7B0C3"
+
+        """
+        <text x="120" y="#{y + 22}" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="18" text-anchor="end">#{bar.label}</text>
+        <rect x="#{chart_left}" y="#{y}" width="#{Float.round(bar_width, 2)}" height="#{bar_height}" rx="5" fill="#{bar.color}" />
+        <text x="#{value_x}" y="#{y + 22}" fill="#{value_fill}" font-family="system-ui, sans-serif" font-size="16">#{label}</text>
+        """
+      end)
+      |> Enum.join("\n")
+
+    svg = """
+    <svg xmlns="http://www.w3.org/2000/svg" width="#{width}" height="#{height}" viewBox="0 0 #{width} #{height}">
+      <rect width="#{width}" height="#{height}" rx="10" fill="#0E1118" />
+      #{rows}
+      <text x="#{chart_left}" y="#{height - 24}" fill="#5D6472" font-family="system-ui, sans-serif" font-size="14">#{subtitle}</text>
+    </svg>
+    """
+
+    File.write!(path, svg)
+  end
+
+  def render_latency_svg(path, title, rows) do
+    width = 980
+    row_height = 68
+    header_height = 78
+    height = header_height + row_height * length(rows) + 32
+    chart_left = 330
+    chart_width = 610
+
+    max_value =
+      rows
+      |> Enum.flat_map(fn row -> [row.hf_ms, row.iree_oneshot_ms, row.iree_stream_ms] end)
+      |> Enum.max()
+
+    bars =
+      rows
+      |> Enum.with_index()
+      |> Enum.map(fn {row, index} ->
+        y = header_height + index * row_height
+
+        [
+          metric_bar(chart_left, chart_width, y, "HF", row.hf_ms, max_value, "#5D6472", 0),
+          metric_bar(
+            chart_left,
+            chart_width,
+            y,
+            "IREE oneshot",
+            row.iree_oneshot_ms,
+            max_value,
+            "#5A9BF6",
+            18
+          ),
+          metric_bar(
+            chart_left,
+            chart_width,
+            y,
+            "IREE stream",
+            row.iree_stream_ms,
+            max_value,
+            "#35C296",
+            36
+          )
+        ]
+        |> Enum.join("\n")
+        |> then(
+          &{"<text x=\"18\" y=\"#{y + 25}\" fill=\"#D9E1F2\" font-family=\"system-ui, sans-serif\" font-size=\"14\">#{row.label}</text>\n" <>
+             &1}
+        )
+      end)
+      |> Enum.map_join("\n", &elem(&1, 0))
+
+    svg = """
+    <svg xmlns="http://www.w3.org/2000/svg" width="#{width}" height="#{height}" viewBox="0 0 #{width} #{height}">
+      <rect width="#{width}" height="#{height}" rx="10" fill="#0E1118" />
+      <text x="18" y="34" fill="#F7FAFF" font-family="system-ui, sans-serif" font-size="22">#{title}</text>
+      <text x="18" y="58" fill="#7F8796" font-family="system-ui, sans-serif" font-size="14">Latency in milliseconds, lower is better</text>
+      #{bars}
+    </svg>
+    """
+
+    File.write!(path, svg)
+  end
+
+  def render_speedup_svg(path, title, rows) do
+    width = 980
+    row_height = 58
+    header_height = 78
+    height = header_height + row_height * length(rows) + 32
+    chart_left = 330
+    chart_width = 610
+
+    max_value =
+      rows
+      |> Enum.flat_map(fn row -> [row.iree_oneshot_speedup, row.iree_stream_speedup] end)
+      |> Enum.max()
+
+    bars =
+      rows
+      |> Enum.with_index()
+      |> Enum.map(fn {row, index} ->
+        y = header_height + index * row_height
+        oneshot_width = chart_width * (row.iree_oneshot_speedup / max_value)
+        stream_width = chart_width * (row.iree_stream_speedup / max_value)
+
+        """
+        <text x="18" y="#{y + 22}" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="14">#{row.label}</text>
+        <rect x="#{chart_left}" y="#{y}" width="#{Float.round(oneshot_width, 2)}" height="16" rx="4" fill="#5A9BF6" />
+        <text x="#{chart_left + oneshot_width + 10}" y="#{y + 13}" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">#{Float.round(row.iree_oneshot_speedup, 1)}x oneshot</text>
+        <rect x="#{chart_left}" y="#{y + 22}" width="#{Float.round(stream_width, 2)}" height="16" rx="4" fill="#35C296" />
+        <text x="#{chart_left + stream_width + 10}" y="#{y + 35}" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">#{Float.round(row.iree_stream_speedup, 1)}x stream</text>
+        """
+      end)
+      |> Enum.join("\n")
+
+    svg = """
+    <svg xmlns="http://www.w3.org/2000/svg" width="#{width}" height="#{height}" viewBox="0 0 #{width} #{height}">
+      <rect width="#{width}" height="#{height}" rx="10" fill="#0E1118" />
+      <text x="18" y="34" fill="#F7FAFF" font-family="system-ui, sans-serif" font-size="22">#{title}</text>
+      <text x="18" y="58" fill="#7F8796" font-family="system-ui, sans-serif" font-size="14">Speedup relative to Hugging Face, higher is better</text>
+      #{bars}
+    </svg>
+    """
+
+    File.write!(path, svg)
+  end
+
+  def load_tokenizers(repo, opts \\ []) do
+    with {:ok, iree_tokenizer} <- IREETokenizer.from_pretrained(repo, opts),
+         {:ok, hf_tokenizer} <- HFTokenizer.from_pretrained(repo, opts) do
+      {:ok, iree_tokenizer, hf_tokenizer}
+    end
+  end
+
+  def pretrained_opts do
+    case System.get_env("HF_TOKEN") do
+      nil -> []
+      token -> [token: token]
+    end
+  end
+
+  def chunk_binary(binary, chunk_bytes) do
+    do_chunk_binary(binary, chunk_bytes, [])
+  end
+
+  defp do_chunk_binary(<<>>, _chunk_bytes, acc), do: Enum.reverse(acc)
+
+  defp do_chunk_binary(binary, chunk_bytes, acc) when byte_size(binary) <= chunk_bytes,
+    do: Enum.reverse([binary | acc])
+
+  defp do_chunk_binary(binary, chunk_bytes, acc) do
+    <<chunk::binary-size(chunk_bytes), rest::binary>> = binary
+    do_chunk_binary(rest, chunk_bytes, [chunk | acc])
+  end
+
+  defp metric_bar(chart_left, chart_width, y, prefix, value, max_value, color, offset) do
+    width = chart_width * (value / max_value)
+
+    """
+    <rect x="#{chart_left}" y="#{y + offset}" width="#{Float.round(width, 2)}" height="14" rx="4" fill="#{color}" />
+    <text x="#{chart_left + width + 10}" y="#{y + offset + 11}" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">#{prefix}: #{format_ms(value)}</text>
+    """
+  end
+
+  defp timed_call(fun) do
+    started_at = System.monotonic_time(:microsecond)
+    _ = fun.()
+    (System.monotonic_time(:microsecond) - started_at) / 1_000
+  end
+
+  defp median(values) do
+    index = div(length(values), 2)
+    Enum.at(values, index)
+  end
+
+  defp run_for(fun, tokens_per_run, seconds) do
+    started_at = System.monotonic_time(:microsecond)
+    deadline = started_at + trunc(seconds * 1_000_000)
+    do_run_for(fun, tokens_per_run, deadline, started_at, 0, 0)
+  end
+
+  defp do_run_for(fun, tokens_per_run, deadline, started_at, tokens, runs) do
+    now = System.monotonic_time(:microsecond)
+
+    if now >= deadline and runs > 0 do
+      %{
+        tokens: tokens,
+        runs: runs,
+        seconds: max((now - started_at) / 1_000_000, 0.000001)
+      }
+    else
+      {:ok, _} = fun.()
+      do_run_for(fun, tokens_per_run, deadline, started_at, tokens + tokens_per_run, runs + 1)
+    end
+  end
+
+  defp do_benchmark_corpus(paragraph, byte_target, acc) do
+    current_size = acc |> Enum.reverse() |> IO.iodata_length()
+
+    if current_size >= byte_target do
+      acc
+    else
+      do_benchmark_corpus(paragraph, byte_target, [paragraph | acc])
+    end
+  end
+end

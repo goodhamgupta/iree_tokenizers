@@ -35,8 +35,10 @@ texts = %{
 Benchee.run(
   Enum.flat_map(texts, fn {label, text} ->
     [
-      {"iree encode #{label}", fn -> IREETokenizer.encode(iree_tokenizer, text, add_special_tokens: false) end},
-      {"hf encode #{label}", fn -> HFTokenizer.encode(hf_tokenizer, text, add_special_tokens: false) end}
+      {"iree encode #{label}",
+       fn -> IREETokenizer.encode(iree_tokenizer, text, add_special_tokens: false) end},
+      {"hf encode #{label}",
+       fn -> HFTokenizer.encode(hf_tokenizer, text, add_special_tokens: false) end}
     ]
   end)
   |> Map.new(),
@@ -61,8 +63,10 @@ Benchee.run(
   encoded_inputs
   |> Enum.flat_map(fn {label, iree_ids, hf_ids} ->
     [
-      {"iree decode #{label}", fn -> IREETokenizer.decode(iree_tokenizer, iree_ids, skip_special_tokens: false) end},
-      {"hf decode #{label}", fn -> HFTokenizer.decode(hf_tokenizer, hf_ids, skip_special_tokens: false) end}
+      {"iree decode #{label}",
+       fn -> IREETokenizer.decode(iree_tokenizer, iree_ids, skip_special_tokens: false) end},
+      {"hf decode #{label}",
+       fn -> HFTokenizer.decode(hf_tokenizer, hf_ids, skip_special_tokens: false) end}
     ]
   end)
   |> Map.new(),
