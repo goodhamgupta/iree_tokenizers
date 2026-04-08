@@ -1,7 +1,7 @@
 defmodule IREETokenizersBench.Support do
   alias IREE.Tokenizers.EncodeStream
   alias IREE.Tokenizers.Tokenizer, as: IREETokenizer
-  alias Tokenizers.Tokenizer, as: HFTokenizer
+  alias Tokenizers.Tokenizer, as: ElixirTokenizers
 
   @default_chunk_bytes 16_384
 
@@ -218,7 +218,7 @@ defmodule IREETokenizersBench.Support do
     <svg xmlns="http://www.w3.org/2000/svg" width="#{width}" height="#{height}" viewBox="0 0 #{width} #{height}">
       <rect width="#{width}" height="#{height}" rx="10" fill="#0E1118" />
       <text x="18" y="34" fill="#F7FAFF" font-family="system-ui, sans-serif" font-size="22">#{title}</text>
-      <text x="18" y="58" fill="#7F8796" font-family="system-ui, sans-serif" font-size="14">Speedup relative to Hugging Face, higher is better</text>
+      <text x="18" y="58" fill="#7F8796" font-family="system-ui, sans-serif" font-size="14">Speedup relative to elixir-nx/tokenizers, higher is better</text>
       #{bars}
     </svg>
     """
@@ -228,8 +228,9 @@ defmodule IREETokenizersBench.Support do
 
   def load_tokenizers(repo, opts \\ []) do
     with {:ok, iree_tokenizer} <- IREETokenizer.from_pretrained(repo, iree_pretrained_opts(opts)),
-         {:ok, hf_tokenizer} <- HFTokenizer.from_pretrained(repo, hf_pretrained_opts(opts)) do
-      {:ok, iree_tokenizer, hf_tokenizer}
+         {:ok, tokenizers_tokenizer} <-
+           ElixirTokenizers.from_pretrained(repo, hf_pretrained_opts(opts)) do
+      {:ok, iree_tokenizer, tokenizers_tokenizer}
     end
   end
 

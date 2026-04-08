@@ -2,7 +2,7 @@ Mix.Task.run("app.start")
 
 alias IREETokenizersBench.Support
 alias IREE.Tokenizers.Tokenizer, as: IREETokenizer
-alias Tokenizers.Tokenizer, as: HFTokenizer
+alias Tokenizers.Tokenizer, as: ElixirTokenizers
 
 defmodule IREETokenizersBench.ModelMatrix do
   alias IREETokenizersBench.Support
@@ -92,8 +92,16 @@ defmodule IREETokenizersBench.ModelMatrix do
         IO.puts("Benchmarking #{model.label}...")
 
         case load_model(model) do
-          {:ok, actual_repo, iree_tokenizer, hf_tokenizer} ->
-            row = benchmark_model(model.label, actual_repo, iree_tokenizer, hf_tokenizer, corpus)
+          {:ok, actual_repo, iree_tokenizer, tokenizers_tokenizer} ->
+            row =
+              benchmark_model(
+                model.label,
+                actual_repo,
+                iree_tokenizer,
+                tokenizers_tokenizer,
+                corpus
+              )
+
             {[row | rows], skipped}
 
           {:error, reason} ->
@@ -112,7 +120,7 @@ defmodule IREETokenizersBench.ModelMatrix do
 
     Support.render_speedup_svg(
       Path.join(results_dir, "model_matrix_speedup.svg"),
-      "IREE speedup vs Hugging Face",
+      "IREE speedup vs elixir-nx/tokenizers",
       rows
     )
 
@@ -127,8 +135,8 @@ defmodule IREETokenizersBench.ModelMatrix do
   defp load_model(model) do
     Enum.find_value(model.repos, {:error, "no usable tokenizer.json found"}, fn repo ->
       case Support.load_tokenizers(repo, Support.pretrained_opts()) do
-        {:ok, iree_tokenizer, hf_tokenizer} ->
-          {:ok, repo, iree_tokenizer, hf_tokenizer}
+        {:ok, iree_tokenizer, tokenizers_tokenizer} ->
+          {:ok, repo, iree_tokenizer, tokenizers_tokenizer}
 
         {:error, _reason} ->
           nil
@@ -136,10 +144,10 @@ defmodule IREETokenizersBench.ModelMatrix do
     end)
   end
 
-  defp benchmark_model(label, actual_repo, iree_tokenizer, hf_tokenizer, corpus) do
-    hf_ms =
+  defp benchmark_model(label, actual_repo, iree_tokenizer, tokenizers_tokenizer, corpus) do
+    tokenizers_ms =
       Support.time_ms(fn ->
-        HFTokenizer.encode(hf_tokenizer, corpus, add_special_tokens: false)
+        ElixirTokenizers.encode(tokenizers_tokenizer, corpus, add_special_tokens: false)
       end)
 
     iree_oneshot_ms =
@@ -152,17 +160,17 @@ defmodule IREETokenizersBench.ModelMatrix do
     %{
       label: label,
       actual_repo: actual_repo,
-      hf_ms: hf_ms,
+      hf_ms: tokenizers_ms,
       iree_oneshot_ms: iree_oneshot_ms,
       iree_stream_ms: iree_stream_ms,
-      iree_oneshot_speedup: hf_ms / iree_oneshot_ms,
-      iree_stream_speedup: hf_ms / iree_stream_ms
+      iree_oneshot_speedup: tokenizers_ms / iree_oneshot_ms,
+      iree_stream_speedup: tokenizers_ms / iree_stream_ms
     }
   end
 
   defp render_summary(rows, skipped) do
     table_header = """
-    | Model | Repo used | Hugging Face (ms) | IREE oneshot / stream (ms) | Speedup |
+    | Model | Repo used | Tokenizers package (ms) | IREE oneshot / stream (ms) | Speedup |
     | --- | --- | ---: | ---: | --- |
     """
 

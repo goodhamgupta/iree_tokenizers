@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="232" viewBox="0 0 800 232">
+  <rect width="800" height="232" rx="10" fill="#0E1118" />
+  <text x="120" y="46" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="18" text-anchor="end">iree</text>
+<rect x="170" y="24" width="590.0" height="32" rx="5" fill="#35C296" />
+<text x="605.0" y="46" fill="#F7FAFF" font-family="system-ui, sans-serif" font-size="16">66.9M tokens/sec</text>
+
+<text x="120" y="102" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="18" text-anchor="end">hf</text>
+<rect x="170" y="80" width="20.29" height="32" rx="5" fill="#E23A37" />
+<text x="204.29428253411385" y="102" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="16">2.3M tokens/sec</text>
+
+  <text x="170" y="208" fill="#5D6472" font-family="system-ui, sans-serif" font-size="14">GPT-2 · batch of 100 · decode throughput · higher is better</text>
+</svg>
