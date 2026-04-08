@@ -8,3 +8,6 @@
 /native/iree_tokenizers_native/target/
 /priv/native/
 /checksum-*.exs
+/bench/.elixir_ls/
+/bench/_build/
+/bench/deps/

@@ -1,1 +1,0 @@
-{application,iree_tokenizers_bench,[{modules,[]},{optional_applications,[]},{applications,[kernel,stdlib,elixir,logger,benchee,iree_tokenizers,rustler,tokenizers]},{description,"iree_tokenizers_bench"},{registered,[]},{vsn,"0.1.0"}]}.
