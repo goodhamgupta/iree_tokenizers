@@ -36,8 +36,7 @@ mix test
 cargo test --manifest-path native/iree_tokenizers_native/Cargo.toml
 ```
 
-In `:dev` and `:test`, the project forces a local source build of the Rust NIF,
-so you do not need precompiled release assets for normal development.
+In `:dev` and `:test`, the project forces a local source build of the Rust NIF, so you do not need precompiled release assets for normal development.
 
 ## Example
 
@@ -72,13 +71,9 @@ If you need authentication for gated/private repos:
 
 ### Current Local Results
 
-The benchmark harness compares this package against the published
-[`tokenizers`](https://hex.pm/packages/tokenizers) package.
+The benchmark harness compares this package against the published [`tokenizers`](https://hex.pm/packages/tokenizers) package.
 
-On a recent local GPT-2 batch-of-100 encode run, this package measured
-`9.4M tokens/sec`. The IREE tokenizer author reports `10.1M tokens/sec` in the
-upstream post. That difference is small enough to be unsurprising and does not
-indicate a correctness problem by itself:
+On a recent local GPT-2 batch-of-100 encode run, this package measured `9.4M tokens/sec`. The IREE tokenizer author reports `10.1M tokens/sec` in the upstream post. That difference is small enough to be unsurprising and does not indicate a correctness problem by itself:
 
 - the local harness measures through Elixir/NIF integration rather than a pure
   native benchmark
@@ -92,8 +87,7 @@ package.
 
 #### Model latency comparison
 
-The current checked-in local snapshot from
-[`bench/results/model_matrix.md`](bench/results/model_matrix.md) contains:
+The current checked-in local snapshot from [`bench/results/model_matrix.md`](bench/results/model_matrix.md) contains:
 
 | Model | Repo used | Tokenizers package (ms) | IREE oneshot / stream (ms) | Speedup |
 | --- | --- | ---: | ---: | --- |
@@ -103,13 +97,8 @@ The current checked-in local snapshot from
 | `mistralai/Ministral-3-3B-Reasoning-2512` | `mistralai/Ministral-3-3B-Reasoning-2512` | `63.0 ms` | `4.69 ms / 5.66 ms` | `13.4x / 11.1x` |
 | `google/gemma-4-31B-it` | `google/gemma-4-31B-it` | `20.1 ms` | `3.39 ms / 3.81 ms` | `5.9x / 5.3x` |
 
-Current skipped target:
 
-- `arcee-ai/Trinity-Large-Preview` — no usable `tokenizer.json` exposed at the time of the run
-
-The benchmark harness intentionally keeps only one representative repo per
-tokenizer family when multiple model variants share the same tokenizer. The
-current family-level matrix targets:
+The benchmark harness intentionally keeps only one representative repo per tokenizer family when multiple model variants share the same tokenizer. The current family-level matrix targets:
 
 - `LiquidAI/LFM2.5-1.2B-Instruct`
 - `Qwen/Qwen3.5-9B`
@@ -163,8 +152,7 @@ MODEL_FILTER="zai-org/GLM-5.1" mix run model_matrix_graphs.exs
 
 All benchmark outputs are written to [`bench/results/`](bench/results/).
 
-If any benchmark target requires authentication, set `HF_TOKEN` before running
-the script:
+If any benchmark target requires authentication, set `HF_TOKEN` before running the script:
 
 ```bash
 HF_TOKEN=... mix run model_matrix_graphs.exs
@@ -172,11 +160,9 @@ HF_TOKEN=... mix run model_matrix_graphs.exs
 
 ## Vendored IREE Bundle
 
-The native crate builds against a curated vendored source bundle under
-`native/iree_tokenizers_native/vendor/iree_tokenizer_src`.
+The native crate builds against a curated vendored source bundle under `native/iree_tokenizers_native/vendor/iree_tokenizer_src`.
 
-The vendored bundle is pinned to the IREE commit recorded in
-[`native/iree_tokenizers_native/vendor/IREE_COMMIT`](native/iree_tokenizers_native/vendor/IREE_COMMIT).
+The vendored bundle is pinned to the IREE commit recorded in [`native/iree_tokenizers_native/vendor/IREE_COMMIT`](native/iree_tokenizers_native/vendor/IREE_COMMIT).
 
 To refresh that bundle from the pinned upstream IREE checkout:
 
