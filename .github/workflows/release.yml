@@ -1,10 +1,9 @@
 name: Release
 
 on:
+  release:
+    types: [published]
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
 
 jobs:
   build-assets:
@@ -40,11 +39,16 @@ jobs:
           artifact="libiree_tokenizers_native-v${version}-nif-2.15-${{ matrix.target }}.so"
           cp priv/native/iree_tokenizers_native.so "${artifact}"
           tar -czf "${artifact}.tar.gz" "${artifact}"
-      - name: Upload build artifact
+      - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
           name: nif-${{ matrix.target }}
           path: libiree_tokenizers_native-v*.tar.gz
+      - name: Upload GitHub release asset
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: libiree_tokenizers_native-v*.tar.gz
 
   checksums:
     needs: build-assets
@@ -77,8 +81,36 @@ jobs:
 
             RustlerPrecompiled.write_checksum!(IREE.Tokenizers.Native, files)
           '
-      - name: Upload checksum artifact
+      - name: Upload workflow checksum artifact
         uses: actions/upload-artifact@v4
         with:
           name: rustler-checksum
           path: checksum-Elixir.IREE.Tokenizers.Native.exs
+      - name: Upload GitHub release checksum
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: checksum-Elixir.IREE.Tokenizers.Native.exs
+
+  publish-hex:
+    if: github.event_name == 'release'
+    needs: checksums
+    runs-on: ubuntu-latest
+    env:
+      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download checksum artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rustler-checksum
+          path: .
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.1.1"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fetch deps
+        run: mix deps.get
+      - name: Publish to Hex.pm
+        run: mix hex.publish --yes
