@@ -87,7 +87,9 @@ package.
 
 #### Model latency comparison
 
-The current checked-in local snapshot from [`bench/results/model_matrix.md`](bench/results/model_matrix.md) contains:
+The current checked-in local snapshot from
+[`bench/results/model_matrix.md`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/model_matrix.md)
+contains:
 
 | Model | Repo used | Tokenizers package (ms) | IREE oneshot / stream (ms) | Speedup |
 | --- | --- | ---: | ---: | --- |
@@ -109,15 +111,16 @@ The benchmark harness intentionally keeps only one representative repo per token
 
 Latency chart:
 
-![Model matrix latency](bench/results/model_matrix_latency.svg)
+![Model matrix latency](https://raw.githubusercontent.com/goodhamgupta/iree_tokenizers/main/bench/results/model_matrix_latency.svg)
 
 Speedup chart:
 
-![Model matrix speedup](bench/results/model_matrix_speedup.svg)
+![Model matrix speedup](https://raw.githubusercontent.com/goodhamgupta/iree_tokenizers/main/bench/results/model_matrix_speedup.svg)
 
 ### Benchmark Harness
 
-The benchmark harness lives under [`bench/`](bench/README.md).
+The benchmark harness lives under
+[`bench/`](https://github.com/goodhamgupta/iree_tokenizers/tree/main/bench).
 
 Set it up once:
 
