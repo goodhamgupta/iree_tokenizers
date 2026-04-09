@@ -108,6 +108,8 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+      RUSTLER_PRECOMPILED_FORCE_BUILD_ALL: "true"
+      IREE_TOKENIZERS_BUILD: "1"
     steps:
       - uses: actions/checkout@v4
       - name: Download checksum artifact
