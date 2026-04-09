@@ -25,7 +25,7 @@ vendor/iree_tokenizer_src/iree/base/status.c
 vendor/iree_tokenizer_src/iree/base/status_stack_trace.c
 vendor/iree_tokenizer_src/iree/base/string_builder.c
 vendor/iree_tokenizer_src/iree/base/string_view.c
-vendor/iree_tokenizer_src/iree/base/threading/mutex.c
 vendor/iree_tokenizer_src/iree/base/time.c
 vendor/iree_tokenizer_src/iree/base/tracing/console.c
 vendor/iree_tokenizer_src/iree/base/wait_source.c
+vendor/iree_tokenizer_src/iree/base/threading/mutex.c

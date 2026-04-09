@@ -109,6 +109,11 @@ pub struct iree_tokenizer_vocab_t {
     _private: [u8; 0],
 }
 
+#[repr(C)]
+pub struct iree_tokenizer_tiktoken_config_t {
+    _private: [u8; 0],
+}
+
 pub type iree_tokenizer_token_id_t = i32;
 
 #[repr(C)]
@@ -210,6 +215,17 @@ unsafe extern "C" {
 
     pub fn iree_tokenizer_from_huggingface_json(
         json: iree_string_view_t,
+        allocator: iree_allocator_t,
+        out_tokenizer: *mut *mut iree_tokenizer_t,
+    ) -> iree_status_t;
+
+    pub fn iree_tokenizer_tiktoken_config_by_name(
+        name: iree_string_view_t,
+    ) -> *const iree_tokenizer_tiktoken_config_t;
+
+    pub fn iree_tokenizer_from_tiktoken(
+        data: iree_string_view_t,
+        config: *const iree_tokenizer_tiktoken_config_t,
         allocator: iree_allocator_t,
         out_tokenizer: *mut *mut iree_tokenizer_t,
     ) -> iree_status_t;

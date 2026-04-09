@@ -14,7 +14,7 @@ defmodule IREETokenizers.MixProject do
       package: package(),
       docs: docs(),
       description:
-        "Fast Hugging Face tokenizer.json bindings for Elixir via the IREE tokenizer runtime"
+        "Fast Hugging Face tokenizer.json and OpenAI tiktoken bindings for Elixir via the IREE tokenizer runtime"
     ]
   end
 

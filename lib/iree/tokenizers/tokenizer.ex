@@ -8,22 +8,43 @@ defmodule IREE.Tokenizers.Tokenizer do
   defstruct [:resource]
 
   @type t :: %__MODULE__{resource: reference()}
-
+  @type load_format :: :huggingface_json | :tiktoken
   @type encode_input :: binary()
   @type result(value) :: {:ok, value} | {:error, {atom(), binary()}}
+  @tiktoken_encodings [
+    "cl100k_base",
+    "o200k_base",
+    "o200k_harmony",
+    "r50k_base",
+    "gpt2",
+    "p50k_base",
+    "p50k_edit"
+  ]
 
-  @spec from_buffer(binary()) :: result(t())
-  def from_buffer(buffer) when is_binary(buffer) do
-    IREE.Tokenizers.Native.tokenizer_from_buffer(buffer)
+  @spec from_buffer(binary(), keyword()) :: result(t())
+  def from_buffer(buffer, opts \\ [])
+
+  def from_buffer(buffer, opts) when is_binary(buffer) do
+    with {:ok, opts} <- validate_load_options(opts) do
+      case opts[:format] do
+        :huggingface_json ->
+          IREE.Tokenizers.Native.tokenizer_from_buffer(buffer)
+
+        :tiktoken ->
+          IREE.Tokenizers.Native.tokenizer_from_tiktoken_buffer(buffer, opts[:tiktoken_encoding])
+      end
+    end
   end
 
-  def from_buffer(_buffer),
-    do: {:error, {:invalid_argument, "expected a binary tokenizer.json buffer"}}
+  def from_buffer(_buffer, _opts),
+    do: {:error, {:invalid_argument, "expected a binary tokenizer buffer"}}
 
-  @spec from_file(Path.t()) :: result(t())
-  def from_file(path) when is_binary(path) do
+  @spec from_file(Path.t(), keyword()) :: result(t())
+  def from_file(path, opts \\ [])
+
+  def from_file(path, opts) when is_binary(path) do
     with {:ok, contents} <- File.read(path) do
-      from_buffer(contents)
+      from_buffer(contents, opts)
     else
       {:error, reason} ->
         error = File.Error.exception(action: "read", path: path, reason: reason)
@@ -31,82 +52,77 @@ defmodule IREE.Tokenizers.Tokenizer do
     end
   end
 
-  def from_file(_path), do: {:error, {:invalid_argument, "expected a file path"}}
+  def from_file(_path, _opts), do: {:error, {:invalid_argument, "expected a file path"}}
 
   @spec from_pretrained(binary(), keyword()) :: result(t())
   def from_pretrained(repo_id, opts \\ [])
 
   def from_pretrained(repo_id, opts) when is_binary(repo_id) do
-    opts =
-      Keyword.validate!(opts,
-        revision: "main",
-        use_cache: true,
-        cache_dir: :filename.basedir(:user_cache, "iree_tokenizers"),
-        http_client: {HTTPClient, []},
-        token: nil
-      )
+    with {:ok, opts} <- validate_pretrained_options(opts),
+         {:ok, url, load_opts} <- pretrained_url(repo_id, opts) do
+      {http_client, http_opts} = opts[:http_client]
+      {:ok, app_version} = :application.get_key(:iree_tokenizers, :vsn)
+      app_version = List.to_string(app_version)
 
-    {http_client, http_opts} = opts[:http_client]
-    {:ok, app_version} = :application.get_key(:iree_tokenizers, :vsn)
-    app_version = List.to_string(app_version)
+      headers =
+        [{"user-agent", "iree_tokenizers/#{app_version}"}]
+        |> maybe_put_auth(opts[:token])
 
-    headers =
-      [{"user-agent", "iree_tokenizers/#{app_version}"}]
-      |> maybe_put_auth(opts[:token])
+      http_opts =
+        http_opts
+        |> Keyword.put_new(:base_url, "https://huggingface.co")
+        |> Keyword.put(:url, url)
+        |> Keyword.put(:method, :get)
+        |> Keyword.update(:headers, headers, fn existing -> existing ++ headers end)
 
-    url = "/#{repo_id}/resolve/#{opts[:revision]}/tokenizer.json"
+      file_path_fun = fn etag ->
+        Path.join(opts[:cache_dir], entry_filename(url, etag))
+      end
 
-    http_opts =
-      http_opts
-      |> Keyword.put_new(:base_url, "https://huggingface.co")
-      |> Keyword.put(:url, url)
-      |> Keyword.put(:method, :get)
-      |> Keyword.update(:headers, headers, fn existing -> existing ++ headers end)
-
-    file_path_fun = fn etag ->
-      Path.join(opts[:cache_dir], entry_filename(url, etag))
-    end
-
-    if opts[:use_cache] do
-      case request(http_client, Keyword.put(http_opts, :method, :head)) do
-        {:ok, response} ->
-          etag = fetch_etag(response.headers)
-          file_path = file_path_fun.(etag)
-
-          if File.exists?(file_path) do
-            from_file(file_path)
-          else
-            with {:ok, response} <- request(http_client, http_opts) do
-              File.mkdir_p!(opts[:cache_dir])
-              File.write!(file_path, response.body)
-              from_file(file_path)
-            end
-          end
-
-        {:error, _reason} ->
-          with {:ok, response} <- request(http_client, http_opts) do
+      if opts[:use_cache] do
+        case request(http_client, Keyword.put(http_opts, :method, :head)) do
+          {:ok, response} ->
             etag = fetch_etag(response.headers)
             file_path = file_path_fun.(etag)
 
-            File.mkdir_p!(opts[:cache_dir])
-            File.write!(file_path, response.body)
-            from_file(file_path)
-          end
-      end
-    else
-      with {:ok, response} <- request(http_client, http_opts) do
-        etag = fetch_etag(response.headers)
-        file_path = file_path_fun.(etag)
+            if File.exists?(file_path) do
+              from_file(file_path, load_opts)
+            else
+              with {:ok, response} <- request(http_client, http_opts) do
+                File.mkdir_p!(opts[:cache_dir])
+                File.write!(file_path, response.body)
+                from_file(file_path, load_opts)
+              end
+            end
 
-        File.mkdir_p!(opts[:cache_dir])
-        File.write!(file_path, response.body)
-        from_file(file_path)
+          {:error, _reason} ->
+            with {:ok, response} <- request(http_client, http_opts) do
+              etag = fetch_etag(response.headers)
+              file_path = file_path_fun.(etag)
+
+              File.mkdir_p!(opts[:cache_dir])
+              File.write!(file_path, response.body)
+              from_file(file_path, load_opts)
+            end
+        end
+      else
+        with {:ok, response} <- request(http_client, http_opts) do
+          etag = fetch_etag(response.headers)
+          file_path = file_path_fun.(etag)
+
+          File.mkdir_p!(opts[:cache_dir])
+          File.write!(file_path, response.body)
+          from_file(file_path, load_opts)
+        end
       end
     end
   end
 
   def from_pretrained(_repo_id, _opts),
     do: {:error, {:invalid_argument, "expected a Hugging Face repo id"}}
+
+  @spec supported_tiktoken_encodings() :: [binary()]
+  def supported_tiktoken_encodings, do: @tiktoken_encodings
 
   @spec encode(t(), encode_input(), keyword()) :: result(Encoding.t())
   def encode(tokenizer, input, opts \\ [])
@@ -205,6 +221,97 @@ defmodule IREE.Tokenizers.Tokenizer do
 
   defp maybe_put_auth(headers, nil), do: headers
   defp maybe_put_auth(headers, token), do: [{"authorization", "Bearer #{token}"} | headers]
+
+  defp validate_load_options(opts) do
+    opts =
+      Keyword.validate!(opts,
+        format: :huggingface_json,
+        tiktoken_encoding: nil
+      )
+
+    case opts[:format] do
+      :huggingface_json ->
+        {:ok, opts}
+
+      :tiktoken ->
+        case normalize_tiktoken_encoding(opts[:tiktoken_encoding]) do
+          {:ok, encoding} -> {:ok, Keyword.put(opts, :tiktoken_encoding, encoding)}
+          {:error, _reason} = error -> error
+        end
+
+      other ->
+        {:error, {:invalid_argument, "unsupported tokenizer format: #{inspect(other)}"}}
+    end
+  end
+
+  defp validate_pretrained_options(opts) do
+    opts =
+      Keyword.validate!(opts,
+        revision: "main",
+        use_cache: true,
+        cache_dir: :filename.basedir(:user_cache, "iree_tokenizers"),
+        http_client: {HTTPClient, []},
+        token: nil,
+        format: :huggingface_json,
+        filename: nil,
+        tiktoken_encoding: nil
+      )
+
+    with {:ok, load_opts} <-
+           validate_load_options(Keyword.take(opts, [:format, :tiktoken_encoding])),
+         {:ok, filename} <-
+           normalize_filename(load_opts[:format], opts[:filename], load_opts[:tiktoken_encoding]) do
+      {:ok,
+       opts
+       |> Keyword.put(:format, load_opts[:format])
+       |> Keyword.put(:tiktoken_encoding, load_opts[:tiktoken_encoding])
+       |> Keyword.put(:filename, filename)}
+    end
+  end
+
+  defp normalize_filename(:huggingface_json, nil, _encoding), do: {:ok, "tokenizer.json"}
+
+  defp normalize_filename(:huggingface_json, filename, _encoding) when is_binary(filename),
+    do: {:ok, filename}
+
+  defp normalize_filename(:tiktoken, nil, encoding) do
+    with {:ok, encoding} <- normalize_tiktoken_encoding(encoding) do
+      {:ok, "#{encoding}.tiktoken"}
+    end
+  end
+
+  defp normalize_filename(:tiktoken, filename, _encoding) when is_binary(filename),
+    do: {:ok, filename}
+
+  defp normalize_filename(_format, _filename, _encoding),
+    do: {:error, {:invalid_argument, "expected :filename to be a binary path when provided"}}
+
+  defp normalize_tiktoken_encoding(encoding) when encoding in @tiktoken_encodings,
+    do: {:ok, encoding}
+
+  defp normalize_tiktoken_encoding(nil) do
+    {:error,
+     {:invalid_argument,
+      "expected :tiktoken_encoding when format is :tiktoken; supported encodings: #{Enum.join(@tiktoken_encodings, ", ")}"}}
+  end
+
+  defp normalize_tiktoken_encoding(encoding) when is_binary(encoding) do
+    {:error,
+     {:invalid_argument,
+      "unsupported tiktoken encoding #{inspect(encoding)}; supported encodings: #{Enum.join(@tiktoken_encodings, ", ")}"}}
+  end
+
+  defp normalize_tiktoken_encoding(_encoding) do
+    {:error,
+     {:invalid_argument,
+      "expected :tiktoken_encoding to be a binary; supported encodings: #{Enum.join(@tiktoken_encodings, ", ")}"}}
+  end
+
+  defp pretrained_url(repo_id, opts) do
+    url = "/#{repo_id}/resolve/#{opts[:revision]}/#{opts[:filename]}"
+    load_opts = Keyword.take(opts, [:format, :tiktoken_encoding])
+    {:ok, url, load_opts}
+  end
 
   defp fetch_etag(headers) do
     case List.keyfind(headers, "etag", 0) do

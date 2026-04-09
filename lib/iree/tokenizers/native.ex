@@ -19,6 +19,7 @@ defmodule IREE.Tokenizers.Native do
       Mix.env() in [:dev, :test] or System.get_env("IREE_TOKENIZERS_BUILD") in ["1", "true"]
 
   def tokenizer_from_buffer(_buffer), do: err()
+  def tokenizer_from_tiktoken_buffer(_buffer, _encoding), do: err()
   def tokenizer_encode(_tokenizer, _text, _opts), do: err()
   def tokenizer_encode_batch(_tokenizer, _texts, _opts), do: err()
   def tokenizer_decode(_tokenizer, _ids, _opts), do: err()

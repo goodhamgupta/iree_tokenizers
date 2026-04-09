@@ -51,6 +51,101 @@ defmodule IREETokenizers.TokenizerTest do
     assert Tokenizer.vocab_size(tokenizer_from_file) == 112
   end
 
+  test "exposes supported tiktoken encodings" do
+    assert Tokenizer.supported_tiktoken_encodings() == [
+             "cl100k_base",
+             "o200k_base",
+             "o200k_harmony",
+             "r50k_base",
+             "gpt2",
+             "p50k_base",
+             "p50k_edit"
+           ]
+  end
+
+  test "loads tiktoken from buffer and file and roundtrips ASCII" do
+    buffer = minimal_tiktoken_fixture()
+    tmp_path = temp_path("minimal_gpt2.tiktoken")
+    on_exit(fn -> File.rm_rf(tmp_path) end)
+    File.write!(tmp_path, buffer)
+
+    assert {:ok, tokenizer} =
+             Tokenizer.from_buffer(buffer, format: :tiktoken, tiktoken_encoding: "gpt2")
+
+    assert {:ok, tokenizer_from_file} =
+             Tokenizer.from_file(tmp_path, format: :tiktoken, tiktoken_encoding: "gpt2")
+
+    assert Tokenizer.model_type(tokenizer) == "BPE"
+    assert Tokenizer.model_type(tokenizer_from_file) == "BPE"
+    assert Tokenizer.vocab_size(tokenizer) >= 256
+
+    assert {:ok, %Encoding{ids: [72, 101, 108, 108, 111]}} =
+             Tokenizer.encode(tokenizer, "Hello", add_special_tokens: false)
+
+    assert {:ok, "Hello"} = Tokenizer.decode(tokenizer, [72, 101, 108, 108, 111])
+
+    assert {:ok, [%Encoding{ids: [72, 105]}, %Encoding{ids: [33]}]} =
+             Tokenizer.encode_batch(tokenizer, ["Hi", "!"], add_special_tokens: false)
+
+    assert Tokenizer.token_to_id(tokenizer, "H") == 72
+    assert Tokenizer.id_to_token(tokenizer, 72) == "H"
+
+    assert {:ok, stream} = EncodeStream.new(tokenizer, add_special_tokens: false)
+    assert {:ok, chunk1} = EncodeStream.feed(stream, "He")
+    assert {:ok, chunk2} = EncodeStream.feed(stream, "llo")
+    assert {:ok, final_ids} = EncodeStream.finalize(stream)
+
+    assert chunk1 ++ chunk2 ++ final_ids == [72, 101, 108, 108, 111]
+  end
+
+  test "loads tiktoken from pretrained using derived filename", %{agent: agent} do
+    Agent.update(agent, fn _ ->
+      %{
+        requests: [],
+        head_response: {:ok, %{status: 200, headers: [{"etag", "etag-tiktoken"}], body: ""}},
+        get_response: {:ok, %{status: 200, headers: [], body: minimal_tiktoken_fixture()}}
+      }
+    end)
+
+    cache_dir =
+      Path.join(System.tmp_dir!(), "iree-tokenizers-#{System.unique_integer([:positive])}")
+
+    File.rm_rf!(cache_dir)
+
+    assert {:ok, tokenizer} =
+             Tokenizer.from_pretrained("owner/gpt2",
+               cache_dir: cache_dir,
+               http_client: {MockHTTPClient, agent: agent},
+               format: :tiktoken,
+               tiktoken_encoding: "gpt2"
+             )
+
+    assert Tokenizer.model_type(tokenizer) == "BPE"
+
+    requests =
+      Agent.get(agent, fn state ->
+        Enum.reverse(state.requests)
+      end)
+
+    assert Enum.at(requests, 0)[:url] == "/owner/gpt2/resolve/main/gpt2.tiktoken"
+    assert Enum.at(requests, 1)[:url] == "/owner/gpt2/resolve/main/gpt2.tiktoken"
+  end
+
+  test "validates required tiktoken options" do
+    assert {:error, {:invalid_argument, message}} =
+             Tokenizer.from_buffer(minimal_tiktoken_fixture(), format: :tiktoken)
+
+    assert message =~ "expected :tiktoken_encoding"
+
+    assert {:error, {:invalid_argument, message}} =
+             Tokenizer.from_buffer(minimal_tiktoken_fixture(),
+               format: :tiktoken,
+               tiktoken_encoding: "unknown"
+             )
+
+    assert message =~ "unsupported tiktoken encoding"
+  end
+
   test "encodes, decodes, batches, and exposes offsets for bpe" do
     tokenizer = load_fixture!("bpe_bytelevel_minimal.json")
 
@@ -266,5 +361,15 @@ defmodule IREETokenizers.TokenizerTest do
 
   defp fixture_path(name) do
     Path.join([__DIR__, "..", "fixtures", name])
+  end
+
+  defp minimal_tiktoken_fixture do
+    0..255
+    |> Enum.map_join("\n", fn id -> "#{Base.encode64(<<id>>)} #{id}" end)
+    |> Kernel.<>("\n")
+  end
+
+  defp temp_path(name) do
+    Path.join(System.tmp_dir!(), "iree-tokenizers-#{System.unique_integer([:positive])}-#{name}")
   end
 end

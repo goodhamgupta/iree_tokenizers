@@ -1,12 +1,12 @@
 # IREE.Tokenizers
 
-Fast Hugging Face `tokenizer.json` bindings for Elixir backed by the IREE tokenizer runtime. I discovered [IREE Tokenizers](https://github.com/iree-org/iree-tokenizer-py) from the [ZML.ai blog](https://zml.ai/posts/iree-tokenizer/), a company I deeply admire!
+Fast Hugging Face `tokenizer.json` and OpenAI `.tiktoken` bindings for Elixir backed by the IREE tokenizer runtime. I discovered [IREE Tokenizers](https://github.com/iree-org/iree-tokenizer-py) from the [ZML.ai blog](https://zml.ai/posts/iree-tokenizer/), a company I deeply admire!
 
 
 ## Features
 
-- Load tokenizer definitions from a local `tokenizer.json` buffer or file
-- Download and cache `tokenizer.json` files from the Hugging Face Hub
+- Load tokenizer definitions from a local `tokenizer.json` or `.tiktoken` buffer or file
+- Download and cache `tokenizer.json` or `.tiktoken` files from the Hugging Face Hub
 - One-shot encode/decode and batched encode/decode
 - Token offsets and type IDs
 - Vocab lookup helpers
@@ -18,11 +18,11 @@ V1 is intentionally inference-only.
 
 - Supported:
   - Hugging Face `tokenizer.json`
+  - OpenAI `.tiktoken`
   - BPE
   - WordPiece
   - Unigram
 - Deferred:
-  - `.tiktoken`
   - SentencePiece `.model`
   - pair-sequence encode input
   - training and tokenizer mutation APIs
@@ -53,10 +53,27 @@ encoding.ids
   IREE.Tokenizers.Tokenizer.decode(tokenizer, encoding.ids, skip_special_tokens: false)
 ```
 
+For `.tiktoken` files, use the same constructors with `format: :tiktoken` and a supported encoding name:
+
+```elixir
+{:ok, tokenizer} =
+  IREE.Tokenizers.Tokenizer.from_file("gpt2.tiktoken",
+    format: :tiktoken,
+    tiktoken_encoding: "gpt2"
+  )
+
+IREE.Tokenizers.Tokenizer.supported_tiktoken_encodings()
+```
+
 You can also load directly from the Hugging Face Hub:
 
 ```elixir
 {:ok, tokenizer} = IREE.Tokenizers.Tokenizer.from_pretrained("gpt2")
+{:ok, cl100k} =
+  IREE.Tokenizers.Tokenizer.from_pretrained("openai/cl100k_base",
+    format: :tiktoken,
+    tiktoken_encoding: "cl100k_base"
+  )
 ```
 
 If you need authentication for gated/private repos:

@@ -8,6 +8,16 @@ use crate::{
     stream::{DecodeStreamResource, DecodeStreamState, EncodeStreamResource, EncodeStreamState},
 };
 
+const SUPPORTED_TIKTOKEN_ENCODINGS: [&str; 7] = [
+    "cl100k_base",
+    "o200k_base",
+    "o200k_harmony",
+    "r50k_base",
+    "gpt2",
+    "p50k_base",
+    "p50k_edit",
+];
+
 pub struct TokenizerResource {
     pub(crate) ptr: *mut ffi::iree_tokenizer_t,
     pub(crate) model_type: String,
@@ -64,20 +74,27 @@ pub fn tokenizer_from_buffer(buffer: rustler::Binary) -> Result<Tokenizer> {
     };
     check_status(status)?;
 
-    let model_type = string_view_to_string(unsafe { ffi::iree_tokenizer_model_type_name(raw) })
-        .map_err(|err| {
-            TokenizerError::new(
-                ErrorKind::Internal,
-                format!("invalid UTF-8 in tokenizer metadata: {err}"),
-            )
-        })?;
+    tokenizer_from_raw(raw)
+}
 
-    Ok(Tokenizer {
-        resource: ResourceArc::new(TokenizerResource {
-            ptr: raw,
-            model_type,
-        }),
-    })
+#[rustler::nif(schedule = "DirtyCpu")]
+pub fn tokenizer_from_tiktoken_buffer(
+    buffer: rustler::Binary,
+    encoding: String,
+) -> Result<Tokenizer> {
+    let config = tiktoken_config_by_name(&encoding)?;
+    let mut raw = std::ptr::null_mut();
+    let status = unsafe {
+        ffi::iree_tokenizer_from_tiktoken(
+            ffi::make_string_view(buffer.as_slice()),
+            config,
+            ffi::system_allocator(),
+            &mut raw,
+        )
+    };
+    check_status(status)?;
+
+    tokenizer_from_raw(raw)
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -577,4 +594,36 @@ struct ParsedDecodeOptions {
 
 pub(crate) fn invalid_argument(message: impl Into<String>) -> TokenizerError {
     TokenizerError::new(ErrorKind::InvalidArgument, message)
+}
+
+fn tokenizer_from_raw(raw: *mut ffi::iree_tokenizer_t) -> Result<Tokenizer> {
+    let model_type = string_view_to_string(unsafe { ffi::iree_tokenizer_model_type_name(raw) })
+        .map_err(|err| {
+            TokenizerError::new(
+                ErrorKind::Internal,
+                format!("invalid UTF-8 in tokenizer metadata: {err}"),
+            )
+        })?;
+
+    Ok(Tokenizer {
+        resource: ResourceArc::new(TokenizerResource {
+            ptr: raw,
+            model_type,
+        }),
+    })
+}
+
+fn tiktoken_config_by_name(encoding: &str) -> Result<*const ffi::iree_tokenizer_tiktoken_config_t> {
+    let config = unsafe {
+        ffi::iree_tokenizer_tiktoken_config_by_name(ffi::make_string_view(encoding.as_bytes()))
+    };
+
+    if config.is_null() {
+        Err(invalid_argument(format!(
+            "unknown tiktoken encoding {encoding:?}; supported encodings: {}",
+            SUPPORTED_TIKTOKEN_ENCODINGS.join(", ")
+        )))
+    } else {
+        Ok(config)
+    }
 }
