@@ -13,9 +13,6 @@ on:
 permissions:
   contents: write
 
-env:
-  RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.release_tag }}
-
 jobs:
   build-assets:
     strategy:
@@ -56,10 +53,10 @@ jobs:
           name: nif-${{ matrix.target }}
           path: libiree_tokenizers_native-v*.tar.gz
       - name: Upload GitHub release asset
-        if: env.RELEASE_TAG != ''
+        if: github.event_name == 'release' || github.event.inputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
+          tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.release_tag }}
           files: libiree_tokenizers_native-v*.tar.gz
 
   checksums:
@@ -99,14 +96,14 @@ jobs:
           name: rustler-checksum
           path: checksum-Elixir.IREE.Tokenizers.Native.exs
       - name: Upload GitHub release checksum
-        if: env.RELEASE_TAG != ''
+        if: github.event_name == 'release' || github.event.inputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.RELEASE_TAG }}
+          tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.release_tag }}
           files: checksum-Elixir.IREE.Tokenizers.Native.exs
 
   publish-hex:
-    if: env.RELEASE_TAG != ''
+    if: github.event_name == 'release' || github.event.inputs.release_tag != ''
     needs: checksums
     runs-on: ubuntu-latest
     env:
