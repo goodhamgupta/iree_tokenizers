@@ -4,9 +4,17 @@ on:
   release:
     types: [published]
   workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Existing git tag / GitHub release to attach assets to (for example: v0.1.0)"
+        required: true
+        type: string
 
 permissions:
   contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.release_tag }}
 
 jobs:
   build-assets:
@@ -48,9 +56,10 @@ jobs:
           name: nif-${{ matrix.target }}
           path: libiree_tokenizers_native-v*.tar.gz
       - name: Upload GitHub release asset
-        if: github.event_name == 'release'
+        if: env.RELEASE_TAG != ''
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: libiree_tokenizers_native-v*.tar.gz
 
   checksums:
@@ -90,13 +99,14 @@ jobs:
           name: rustler-checksum
           path: checksum-Elixir.IREE.Tokenizers.Native.exs
       - name: Upload GitHub release checksum
-        if: github.event_name == 'release'
+        if: env.RELEASE_TAG != ''
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.RELEASE_TAG }}
           files: checksum-Elixir.IREE.Tokenizers.Native.exs
 
   publish-hex:
-    if: github.event_name == 'release'
+    if: env.RELEASE_TAG != ''
     needs: checksums
     runs-on: ubuntu-latest
     env:
