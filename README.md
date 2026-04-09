@@ -1,6 +1,7 @@
 # IREE.Tokenizers
 
-Fast Hugging Face `tokenizer.json` bindings for Elixir backed by the IREE tokenizer runtime.
+Fast Hugging Face `tokenizer.json` bindings for Elixir backed by the IREE tokenizer runtime. I discovered [IREE Tokenizers](https://github.com/iree-org/iree-tokenizer-py) from the [ZML.ai blog](https://zml.ai/posts/iree-tokenizer/), a company I deeply admire!
+
 
 ## Features
 
