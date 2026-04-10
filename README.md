@@ -53,14 +53,11 @@ encoding.ids
   IREE.Tokenizers.Tokenizer.decode(tokenizer, encoding.ids, skip_special_tokens: false)
 ```
 
-For `.tiktoken` files, use the same constructors with `format: :tiktoken` and a supported encoding name:
+For local `.tiktoken` files, use the same constructors with `format: :tiktoken`. If the filename carries a standard encoding name, it is inferred automatically:
 
 ```elixir
 {:ok, tokenizer} =
-  IREE.Tokenizers.Tokenizer.from_file("gpt2.tiktoken",
-    format: :tiktoken,
-    tiktoken_encoding: "gpt2"
-  )
+  IREE.Tokenizers.Tokenizer.from_file("gpt2.tiktoken", format: :tiktoken)
 
 IREE.Tokenizers.Tokenizer.supported_tiktoken_encodings()
 ```
@@ -70,11 +67,13 @@ You can also load directly from the Hugging Face Hub:
 ```elixir
 {:ok, tokenizer} = IREE.Tokenizers.Tokenizer.from_pretrained("gpt2")
 {:ok, cl100k} =
-  IREE.Tokenizers.Tokenizer.from_pretrained("openai/cl100k_base",
-    format: :tiktoken,
-    tiktoken_encoding: "cl100k_base"
-  )
+  IREE.Tokenizers.Tokenizer.from_pretrained("openai/cl100k_base", format: :tiktoken)
+
+{:ok, gpt4o} =
+  IREE.Tokenizers.Tokenizer.from_pretrained("gpt-4o", format: :tiktoken)
 ```
+
+For custom `.tiktoken` repos or arbitrary in-memory buffers, pass `tiktoken_encoding:` explicitly when it cannot be inferred from the repo/model name or filename.
 
 If you need authentication for gated/private repos:
 

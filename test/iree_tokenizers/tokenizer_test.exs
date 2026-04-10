@@ -63,9 +63,17 @@ defmodule IREETokenizers.TokenizerTest do
            ]
   end
 
+  test "maps known model names to tiktoken encodings" do
+    assert Tokenizer.tiktoken_encoding_for_model("gpt-4o") == "o200k_base"
+    assert Tokenizer.tiktoken_encoding_for_model("gpt-4-0613") == "cl100k_base"
+    assert Tokenizer.tiktoken_encoding_for_model("gpt-oss-120b") == "o200k_harmony"
+    assert Tokenizer.tiktoken_encoding_for_model("gpt2") == "gpt2"
+    assert Tokenizer.tiktoken_encoding_for_model("unknown-model") == nil
+  end
+
   test "loads tiktoken from buffer and file and roundtrips ASCII" do
     buffer = minimal_tiktoken_fixture()
-    tmp_path = temp_path("minimal_gpt2.tiktoken")
+    tmp_path = temp_path("gpt2.tiktoken")
     on_exit(fn -> File.rm_rf(tmp_path) end)
     File.write!(tmp_path, buffer)
 
@@ -75,8 +83,12 @@ defmodule IREETokenizers.TokenizerTest do
     assert {:ok, tokenizer_from_file} =
              Tokenizer.from_file(tmp_path, format: :tiktoken, tiktoken_encoding: "gpt2")
 
+    assert {:ok, tokenizer_from_inferred_file} =
+             Tokenizer.from_file(tmp_path, format: :tiktoken)
+
     assert Tokenizer.model_type(tokenizer) == "BPE"
     assert Tokenizer.model_type(tokenizer_from_file) == "BPE"
+    assert Tokenizer.model_type(tokenizer_from_inferred_file) == "BPE"
     assert Tokenizer.vocab_size(tokenizer) >= 256
 
     assert {:ok, %Encoding{ids: [72, 101, 108, 108, 111]}} =
@@ -98,7 +110,7 @@ defmodule IREETokenizers.TokenizerTest do
     assert chunk1 ++ chunk2 ++ final_ids == [72, 101, 108, 108, 111]
   end
 
-  test "loads tiktoken from pretrained using derived filename", %{agent: agent} do
+  test "loads tiktoken from pretrained using openai model inference", %{agent: agent} do
     Agent.update(agent, fn _ ->
       %{
         requests: [],
@@ -113,11 +125,10 @@ defmodule IREETokenizers.TokenizerTest do
     File.rm_rf!(cache_dir)
 
     assert {:ok, tokenizer} =
-             Tokenizer.from_pretrained("owner/gpt2",
+             Tokenizer.from_pretrained("gpt2",
                cache_dir: cache_dir,
                http_client: {MockHTTPClient, agent: agent},
-               format: :tiktoken,
-               tiktoken_encoding: "gpt2"
+               format: :tiktoken
              )
 
     assert Tokenizer.model_type(tokenizer) == "BPE"
@@ -127,15 +138,87 @@ defmodule IREETokenizers.TokenizerTest do
         Enum.reverse(state.requests)
       end)
 
-    assert Enum.at(requests, 0)[:url] == "/owner/gpt2/resolve/main/gpt2.tiktoken"
-    assert Enum.at(requests, 1)[:url] == "/owner/gpt2/resolve/main/gpt2.tiktoken"
+    assert Enum.at(requests, 0)[:base_url] == "https://openaipublic.blob.core.windows.net"
+    assert Enum.at(requests, 0)[:url] == "/encodings/r50k_base.tiktoken"
+    assert Enum.at(requests, 1)[:base_url] == "https://openaipublic.blob.core.windows.net"
+    assert Enum.at(requests, 1)[:url] == "/encodings/r50k_base.tiktoken"
+  end
+
+  test "loads tiktoken from pretrained using openai slash encoding shorthand", %{agent: agent} do
+    Agent.update(agent, fn _ ->
+      %{
+        requests: [],
+        head_response: {:ok, %{status: 200, headers: [{"etag", "etag-cl100k"}], body: ""}},
+        get_response: {:ok, %{status: 200, headers: [], body: minimal_tiktoken_fixture()}}
+      }
+    end)
+
+    cache_dir =
+      Path.join(System.tmp_dir!(), "iree-tokenizers-#{System.unique_integer([:positive])}")
+
+    File.rm_rf!(cache_dir)
+
+    assert {:ok, tokenizer} =
+             Tokenizer.from_pretrained("openai/cl100k_base",
+               cache_dir: cache_dir,
+               http_client: {MockHTTPClient, agent: agent},
+               format: :tiktoken
+             )
+
+    assert Tokenizer.model_type(tokenizer) == "BPE"
+
+    requests =
+      Agent.get(agent, fn state ->
+        Enum.reverse(state.requests)
+      end)
+
+    assert Enum.at(requests, 0)[:base_url] == "https://openaipublic.blob.core.windows.net"
+    assert Enum.at(requests, 0)[:url] == "/encodings/cl100k_base.tiktoken"
+    assert Enum.at(requests, 1)[:base_url] == "https://openaipublic.blob.core.windows.net"
+    assert Enum.at(requests, 1)[:url] == "/encodings/cl100k_base.tiktoken"
+  end
+
+  test "uses hugging face paths for custom tiktoken repos", %{agent: agent} do
+    Agent.update(agent, fn _ ->
+      %{
+        requests: [],
+        head_response: {:ok, %{status: 200, headers: [{"etag", "etag-custom"}], body: ""}},
+        get_response: {:ok, %{status: 200, headers: [], body: minimal_tiktoken_fixture()}}
+      }
+    end)
+
+    cache_dir =
+      Path.join(System.tmp_dir!(), "iree-tokenizers-#{System.unique_integer([:positive])}")
+
+    File.rm_rf!(cache_dir)
+
+    assert {:ok, tokenizer} =
+             Tokenizer.from_pretrained("owner/custom-tiktoken",
+               cache_dir: cache_dir,
+               http_client: {MockHTTPClient, agent: agent},
+               format: :tiktoken,
+               filename: "custom.tiktoken",
+               tiktoken_encoding: "cl100k_base"
+             )
+
+    assert Tokenizer.model_type(tokenizer) == "BPE"
+
+    requests =
+      Agent.get(agent, fn state ->
+        Enum.reverse(state.requests)
+      end)
+
+    assert Enum.at(requests, 0)[:base_url] == "https://huggingface.co"
+    assert Enum.at(requests, 0)[:url] == "/owner/custom-tiktoken/resolve/main/custom.tiktoken"
+    assert Enum.at(requests, 1)[:base_url] == "https://huggingface.co"
+    assert Enum.at(requests, 1)[:url] == "/owner/custom-tiktoken/resolve/main/custom.tiktoken"
   end
 
   test "validates required tiktoken options" do
     assert {:error, {:invalid_argument, message}} =
              Tokenizer.from_buffer(minimal_tiktoken_fixture(), format: :tiktoken)
 
-    assert message =~ "expected :tiktoken_encoding"
+    assert message =~ "could not infer a tiktoken encoding"
 
     assert {:error, {:invalid_argument, message}} =
              Tokenizer.from_buffer(minimal_tiktoken_fixture(),
@@ -144,6 +227,11 @@ defmodule IREETokenizers.TokenizerTest do
              )
 
     assert message =~ "unsupported tiktoken encoding"
+
+    assert {:error, {:invalid_argument, message}} =
+             Tokenizer.from_pretrained("owner/custom", format: :tiktoken)
+
+    assert message =~ "could not infer a tiktoken encoding"
   end
 
   test "encodes, decodes, batches, and exposes offsets for bpe" do

@@ -11,6 +11,8 @@ defmodule IREE.Tokenizers.Tokenizer do
   @type load_format :: :huggingface_json | :tiktoken
   @type encode_input :: binary()
   @type result(value) :: {:ok, value} | {:error, {atom(), binary()}}
+  @openai_tiktoken_base_url "https://openaipublic.blob.core.windows.net"
+  @huggingface_base_url "https://huggingface.co"
   @tiktoken_encodings [
     "cl100k_base",
     "o200k_base",
@@ -20,12 +22,87 @@ defmodule IREE.Tokenizers.Tokenizer do
     "p50k_base",
     "p50k_edit"
   ]
+  @tiktoken_model_prefix_to_encoding %{
+    "o1-" => "o200k_base",
+    "o3-" => "o200k_base",
+    "o4-mini-" => "o200k_base",
+    "gpt-5-" => "o200k_base",
+    "gpt-4.5-" => "o200k_base",
+    "gpt-4.1-" => "o200k_base",
+    "chatgpt-4o-" => "o200k_base",
+    "gpt-4o-" => "o200k_base",
+    "gpt-4-" => "cl100k_base",
+    "gpt-3.5-turbo-" => "cl100k_base",
+    "gpt-35-turbo-" => "cl100k_base",
+    "gpt-oss-" => "o200k_harmony",
+    "ft:gpt-4o" => "o200k_base",
+    "ft:gpt-4" => "cl100k_base",
+    "ft:gpt-3.5-turbo" => "cl100k_base",
+    "ft:davinci-002" => "cl100k_base",
+    "ft:babbage-002" => "cl100k_base"
+  }
+  @tiktoken_model_to_encoding %{
+    "o1" => "o200k_base",
+    "o3" => "o200k_base",
+    "o4-mini" => "o200k_base",
+    "gpt-5" => "o200k_base",
+    "gpt-4.1" => "o200k_base",
+    "gpt-4o" => "o200k_base",
+    "gpt-4" => "cl100k_base",
+    "gpt-3.5-turbo" => "cl100k_base",
+    "gpt-3.5" => "cl100k_base",
+    "gpt-35-turbo" => "cl100k_base",
+    "davinci-002" => "cl100k_base",
+    "babbage-002" => "cl100k_base",
+    "text-embedding-ada-002" => "cl100k_base",
+    "text-embedding-3-small" => "cl100k_base",
+    "text-embedding-3-large" => "cl100k_base",
+    "text-davinci-003" => "p50k_base",
+    "text-davinci-002" => "p50k_base",
+    "text-davinci-001" => "r50k_base",
+    "text-curie-001" => "r50k_base",
+    "text-babbage-001" => "r50k_base",
+    "text-ada-001" => "r50k_base",
+    "davinci" => "r50k_base",
+    "curie" => "r50k_base",
+    "babbage" => "r50k_base",
+    "ada" => "r50k_base",
+    "code-davinci-002" => "p50k_base",
+    "code-davinci-001" => "p50k_base",
+    "code-cushman-002" => "p50k_base",
+    "code-cushman-001" => "p50k_base",
+    "davinci-codex" => "p50k_base",
+    "cushman-codex" => "p50k_base",
+    "text-davinci-edit-001" => "p50k_edit",
+    "code-davinci-edit-001" => "p50k_edit",
+    "text-similarity-davinci-001" => "r50k_base",
+    "text-similarity-curie-001" => "r50k_base",
+    "text-similarity-babbage-001" => "r50k_base",
+    "text-similarity-ada-001" => "r50k_base",
+    "text-search-davinci-doc-001" => "r50k_base",
+    "text-search-curie-doc-001" => "r50k_base",
+    "text-search-babbage-doc-001" => "r50k_base",
+    "text-search-ada-doc-001" => "r50k_base",
+    "code-search-babbage-code-001" => "r50k_base",
+    "code-search-ada-code-001" => "r50k_base",
+    "gpt2" => "gpt2",
+    "gpt-2" => "gpt2"
+  }
+  @openai_public_tiktoken_files %{
+    "cl100k_base" => "cl100k_base.tiktoken",
+    "o200k_base" => "o200k_base.tiktoken",
+    "o200k_harmony" => "o200k_base.tiktoken",
+    "r50k_base" => "r50k_base.tiktoken",
+    "gpt2" => "r50k_base.tiktoken",
+    "p50k_base" => "p50k_base.tiktoken",
+    "p50k_edit" => "p50k_base.tiktoken"
+  }
 
   @spec from_buffer(binary(), keyword()) :: result(t())
   def from_buffer(buffer, opts \\ [])
 
   def from_buffer(buffer, opts) when is_binary(buffer) do
-    with {:ok, opts} <- validate_load_options(opts) do
+    with {:ok, opts} <- normalize_load_options(opts, :buffer) do
       case opts[:format] do
         :huggingface_json ->
           IREE.Tokenizers.Native.tokenizer_from_buffer(buffer)
@@ -43,9 +120,13 @@ defmodule IREE.Tokenizers.Tokenizer do
   def from_file(path, opts \\ [])
 
   def from_file(path, opts) when is_binary(path) do
-    with {:ok, contents} <- File.read(path) do
+    with {:ok, opts} <- normalize_load_options(opts, path),
+         {:ok, contents} <- File.read(path) do
       from_buffer(contents, opts)
     else
+      {:error, {_kind, _message}} = error ->
+        error
+
       {:error, reason} ->
         error = File.Error.exception(action: "read", path: path, reason: reason)
         {:error, {:not_found, "failed to read #{path}: #{Exception.message(error)}"}}
@@ -58,8 +139,8 @@ defmodule IREE.Tokenizers.Tokenizer do
   def from_pretrained(repo_id, opts \\ [])
 
   def from_pretrained(repo_id, opts) when is_binary(repo_id) do
-    with {:ok, opts} <- validate_pretrained_options(opts),
-         {:ok, url, load_opts} <- pretrained_url(repo_id, opts) do
+    with {:ok, opts} <- validate_pretrained_options(opts, repo_id),
+         {:ok, source} <- pretrained_source(repo_id, opts) do
       {http_client, http_opts} = opts[:http_client]
       {:ok, app_version} = :application.get_key(:iree_tokenizers, :vsn)
       app_version = List.to_string(app_version)
@@ -70,13 +151,13 @@ defmodule IREE.Tokenizers.Tokenizer do
 
       http_opts =
         http_opts
-        |> Keyword.put_new(:base_url, "https://huggingface.co")
-        |> Keyword.put(:url, url)
+        |> Keyword.put_new(:base_url, source.base_url)
+        |> Keyword.put(:url, source.url)
         |> Keyword.put(:method, :get)
         |> Keyword.update(:headers, headers, fn existing -> existing ++ headers end)
 
       file_path_fun = fn etag ->
-        Path.join(opts[:cache_dir], entry_filename(url, etag))
+        Path.join(opts[:cache_dir], entry_filename(source.cache_key, etag))
       end
 
       if opts[:use_cache] do
@@ -86,12 +167,12 @@ defmodule IREE.Tokenizers.Tokenizer do
             file_path = file_path_fun.(etag)
 
             if File.exists?(file_path) do
-              from_file(file_path, load_opts)
+              from_file(file_path, source.load_opts)
             else
               with {:ok, response} <- request(http_client, http_opts) do
                 File.mkdir_p!(opts[:cache_dir])
                 File.write!(file_path, response.body)
-                from_file(file_path, load_opts)
+                from_file(file_path, source.load_opts)
               end
             end
 
@@ -102,7 +183,7 @@ defmodule IREE.Tokenizers.Tokenizer do
 
               File.mkdir_p!(opts[:cache_dir])
               File.write!(file_path, response.body)
-              from_file(file_path, load_opts)
+              from_file(file_path, source.load_opts)
             end
         end
       else
@@ -112,7 +193,7 @@ defmodule IREE.Tokenizers.Tokenizer do
 
           File.mkdir_p!(opts[:cache_dir])
           File.write!(file_path, response.body)
-          from_file(file_path, load_opts)
+          from_file(file_path, source.load_opts)
         end
       end
     end
@@ -123,6 +204,13 @@ defmodule IREE.Tokenizers.Tokenizer do
 
   @spec supported_tiktoken_encodings() :: [binary()]
   def supported_tiktoken_encodings, do: @tiktoken_encodings
+
+  @spec tiktoken_encoding_for_model(binary()) :: binary() | nil
+  def tiktoken_encoding_for_model(model) when is_binary(model) do
+    infer_tiktoken_encoding(model)
+  end
+
+  def tiktoken_encoding_for_model(_model), do: nil
 
   @spec encode(t(), encode_input(), keyword()) :: result(Encoding.t())
   def encode(tokenizer, input, opts \\ [])
@@ -234,9 +322,15 @@ defmodule IREE.Tokenizers.Tokenizer do
         {:ok, opts}
 
       :tiktoken ->
-        case normalize_tiktoken_encoding(opts[:tiktoken_encoding]) do
-          {:ok, encoding} -> {:ok, Keyword.put(opts, :tiktoken_encoding, encoding)}
-          {:error, _reason} = error -> error
+        case opts[:tiktoken_encoding] do
+          nil ->
+            {:ok, opts}
+
+          encoding ->
+            case normalize_tiktoken_encoding(encoding) do
+              {:ok, normalized} -> {:ok, Keyword.put(opts, :tiktoken_encoding, normalized)}
+              {:error, _reason} = error -> error
+            end
         end
 
       other ->
@@ -244,7 +338,14 @@ defmodule IREE.Tokenizers.Tokenizer do
     end
   end
 
-  defp validate_pretrained_options(opts) do
+  defp normalize_load_options(opts, source_hint) do
+    with {:ok, opts} <- validate_load_options(opts),
+         {:ok, encoding} <- ensure_tiktoken_encoding(opts, source_hint) do
+      {:ok, Keyword.put(opts, :tiktoken_encoding, encoding)}
+    end
+  end
+
+  defp validate_pretrained_options(opts, repo_id) do
     opts =
       Keyword.validate!(opts,
         revision: "main",
@@ -258,7 +359,7 @@ defmodule IREE.Tokenizers.Tokenizer do
       )
 
     with {:ok, load_opts} <-
-           validate_load_options(Keyword.take(opts, [:format, :tiktoken_encoding])),
+           normalize_load_options(Keyword.take(opts, [:format, :tiktoken_encoding]), repo_id),
          {:ok, filename} <-
            normalize_filename(load_opts[:format], opts[:filename], load_opts[:tiktoken_encoding]) do
       {:ok,
@@ -307,10 +408,113 @@ defmodule IREE.Tokenizers.Tokenizer do
       "expected :tiktoken_encoding to be a binary; supported encodings: #{Enum.join(@tiktoken_encodings, ", ")}"}}
   end
 
-  defp pretrained_url(repo_id, opts) do
-    url = "/#{repo_id}/resolve/#{opts[:revision]}/#{opts[:filename]}"
+  defp ensure_tiktoken_encoding(opts, source_hint) do
+    if opts[:format] != :tiktoken do
+      {:ok, opts[:tiktoken_encoding]}
+    else
+      case opts[:tiktoken_encoding] || infer_tiktoken_encoding(source_hint) do
+        nil ->
+          {:error,
+           {:invalid_argument,
+            "could not infer a tiktoken encoding from #{inspect(source_hint)}; pass :tiktoken_encoding explicitly. Supported encodings: #{Enum.join(@tiktoken_encodings, ", ")}"}}
+
+        encoding ->
+          normalize_tiktoken_encoding(encoding)
+      end
+    end
+  end
+
+  defp infer_tiktoken_encoding(source_hint) when is_binary(source_hint) do
+    candidate =
+      source_hint
+      |> Path.basename()
+      |> String.replace_suffix(".tiktoken", "")
+
+    cond do
+      candidate in @tiktoken_encodings ->
+        candidate
+
+      encoding = Enum.find(@tiktoken_encodings, &String.ends_with?(candidate, &1)) ->
+        encoding
+
+      Map.has_key?(@tiktoken_model_to_encoding, source_hint) ->
+        @tiktoken_model_to_encoding[source_hint]
+
+      Map.has_key?(@tiktoken_model_to_encoding, candidate) ->
+        @tiktoken_model_to_encoding[candidate]
+
+      model = Enum.find(Map.keys(@tiktoken_model_to_encoding), &String.ends_with?(candidate, &1)) ->
+        @tiktoken_model_to_encoding[model]
+
+      repo_leaf(source_hint) in @tiktoken_encodings ->
+        repo_leaf(source_hint)
+
+      Map.has_key?(@tiktoken_model_to_encoding, repo_leaf(source_hint)) ->
+        @tiktoken_model_to_encoding[repo_leaf(source_hint)]
+
+      true ->
+        Enum.find_value(@tiktoken_model_prefix_to_encoding, fn {prefix, encoding} ->
+          if String.starts_with?(source_hint, prefix) or String.starts_with?(candidate, prefix) or
+               String.starts_with?(repo_leaf(source_hint), prefix) do
+            encoding
+          end
+        end)
+    end
+  end
+
+  defp infer_tiktoken_encoding(_source_hint), do: nil
+
+  defp pretrained_source(repo_id, opts) do
     load_opts = Keyword.take(opts, [:format, :tiktoken_encoding])
-    {:ok, url, load_opts}
+
+    case opts[:format] do
+      :huggingface_json ->
+        url = "/#{repo_id}/resolve/#{opts[:revision]}/#{opts[:filename]}"
+
+        {:ok,
+         %{
+           base_url: @huggingface_base_url,
+           url: url,
+           cache_key: @huggingface_base_url <> url,
+           load_opts: load_opts
+         }}
+
+      :tiktoken ->
+        if builtin_openai_tiktoken_source?(repo_id, opts[:filename]) do
+          filename = Map.fetch!(@openai_public_tiktoken_files, opts[:tiktoken_encoding])
+          url = "/encodings/#{filename}"
+
+          {:ok,
+           %{
+             base_url: @openai_tiktoken_base_url,
+             url: url,
+             cache_key: @openai_tiktoken_base_url <> url,
+             load_opts: load_opts
+           }}
+        else
+          url = "/#{repo_id}/resolve/#{opts[:revision]}/#{opts[:filename]}"
+
+          {:ok,
+           %{
+             base_url: @huggingface_base_url,
+             url: url,
+             cache_key: @huggingface_base_url <> url,
+             load_opts: load_opts
+           }}
+        end
+    end
+  end
+
+  defp builtin_openai_tiktoken_source?(repo_id, filename) do
+    repo_id == repo_leaf(repo_id) or
+      String.starts_with?(repo_id, "openai/") or
+      is_nil(filename)
+  end
+
+  defp repo_leaf(repo_id) when is_binary(repo_id) do
+    repo_id
+    |> String.split("/")
+    |> List.last()
   end
 
   defp fetch_etag(headers) do
