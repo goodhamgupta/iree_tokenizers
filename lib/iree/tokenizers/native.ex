@@ -5,6 +5,13 @@ defmodule IREE.Tokenizers.Native do
   version = mix_config[:version]
   github_url = mix_config[:package][:links]["GitHub"]
 
+  force_build_from_config =
+    Keyword.get(
+      Application.compile_env(:rustler_precompiled, :force_build, []),
+      :iree_tokenizers,
+      false
+    )
+
   use RustlerPrecompiled,
     otp_app: :iree_tokenizers,
     crate: "iree_tokenizers_native",
@@ -16,7 +23,9 @@ defmodule IREE.Tokenizers.Native do
       "x86_64-unknown-linux-gnu"
     ],
     force_build:
-      Mix.env() in [:dev, :test] or System.get_env("IREE_TOKENIZERS_BUILD") in ["1", "true"]
+      Mix.env() in [:dev, :test] or
+        System.get_env("IREE_TOKENIZERS_BUILD") in ["1", "true"] or
+        force_build_from_config
 
   def tokenizer_from_buffer(_buffer), do: err()
   def tokenizer_from_tiktoken_buffer(_buffer, _encoding), do: err()
@@ -25,6 +34,7 @@ defmodule IREE.Tokenizers.Native do
   def tokenizer_decode(_tokenizer, _ids, _opts), do: err()
   def tokenizer_decode_batch(_tokenizer, _batch_ids, _opts), do: err()
   def tokenizer_vocab_size(_tokenizer), do: err()
+  def tokenizer_vocab_capacity(_tokenizer), do: err()
   def tokenizer_model_type(_tokenizer), do: err()
   def tokenizer_token_to_id(_tokenizer, _token), do: err()
   def tokenizer_id_to_token(_tokenizer, _id), do: err()

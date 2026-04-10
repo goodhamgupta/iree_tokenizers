@@ -49,6 +49,9 @@ pub struct Encoding {
     pub ids: Vec<i32>,
     pub type_ids: Vec<u8>,
     pub offsets: Option<Vec<(u64, u64)>>,
+    pub attention_mask: Vec<u8>,
+    pub special_tokens_mask: Vec<u8>,
+    pub tokens: Vec<String>,
 }
 
 #[derive(NifTaggedEnum)]
@@ -207,10 +210,16 @@ pub fn tokenizer_encode_batch(
                     None
                 };
 
+                let (special_tokens_mask, tokens) =
+                    encoding_metadata(&tokenizer.resource, &ids_bufs[index]);
+
                 Encoding {
                     ids: std::mem::take(&mut ids_bufs[index]),
                     type_ids: std::mem::take(&mut type_ids_bufs[index]),
                     offsets,
+                    attention_mask: vec![1; item.out_token_count],
+                    special_tokens_mask,
+                    tokens,
                 }
             })
             .collect();
@@ -307,6 +316,12 @@ pub fn tokenizer_decode_batch(
 pub fn tokenizer_vocab_size(tokenizer: Tokenizer) -> usize {
     let vocab = unsafe { ffi::iree_tokenizer_vocab(tokenizer.resource.ptr) };
     unsafe { ffi::iree_tokenizer_vocab_token_count(vocab) }
+}
+
+#[rustler::nif]
+pub fn tokenizer_vocab_capacity(tokenizer: Tokenizer) -> usize {
+    let vocab = unsafe { ffi::iree_tokenizer_vocab(tokenizer.resource.ptr) };
+    unsafe { ffi::iree_tokenizer_vocab_capacity(vocab) }
 }
 
 #[rustler::nif]
@@ -463,10 +478,15 @@ pub fn encode_impl(
             None
         };
 
+        let (special_tokens_mask, tokens) = encoding_metadata(tokenizer, &ids);
+
         return Ok(Encoding {
             ids,
             type_ids,
             offsets,
+            attention_mask: vec![1; token_count],
+            special_tokens_mask,
+            tokens,
         });
     }
 }
@@ -594,6 +614,23 @@ struct ParsedDecodeOptions {
 
 pub(crate) fn invalid_argument(message: impl Into<String>) -> TokenizerError {
     TokenizerError::new(ErrorKind::InvalidArgument, message)
+}
+
+fn encoding_metadata(tokenizer: &TokenizerResource, ids: &[i32]) -> (Vec<u8>, Vec<String>) {
+    let vocab = unsafe { ffi::iree_tokenizer_vocab(tokenizer.ptr) };
+    let mut special_tokens_mask = Vec::with_capacity(ids.len());
+    let mut tokens = Vec::with_capacity(ids.len());
+
+    for &id in ids {
+        let attrs = unsafe { ffi::iree_tokenizer_vocab_token_attrs(vocab, id) };
+        special_tokens_mask.push(u8::from(
+            (attrs & ffi::IREE_TOKENIZER_TOKEN_ATTR_SPECIAL) != 0,
+        ));
+        let view = unsafe { ffi::iree_tokenizer_vocab_token_text(vocab, id) };
+        tokens.push(string_view_to_string(view).unwrap_or_default());
+    }
+
+    (special_tokens_mask, tokens)
 }
 
 fn tokenizer_from_raw(raw: *mut ffi::iree_tokenizer_t) -> Result<Tokenizer> {

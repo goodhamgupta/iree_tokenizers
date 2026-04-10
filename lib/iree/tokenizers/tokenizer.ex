@@ -3,7 +3,7 @@ defmodule IREE.Tokenizers.Tokenizer do
   Core tokenizer API.
   """
 
-  alias IREE.Tokenizers.{Encoding, HTTPClient}
+  alias IREE.Tokenizers.{ComponentRegistry, Encoding, HTTPClient, Model}
 
   defstruct [:resource]
 
@@ -105,10 +105,18 @@ defmodule IREE.Tokenizers.Tokenizer do
     with {:ok, opts} <- normalize_load_options(opts, :buffer) do
       case opts[:format] do
         :huggingface_json ->
-          IREE.Tokenizers.Native.tokenizer_from_buffer(buffer)
+          with {:ok, tokenizer} <- IREE.Tokenizers.Native.tokenizer_from_buffer(buffer) do
+            {:ok, register_components(tokenizer, %{})}
+          end
 
         :tiktoken ->
-          IREE.Tokenizers.Native.tokenizer_from_tiktoken_buffer(buffer, opts[:tiktoken_encoding])
+          with {:ok, tokenizer} <-
+                 IREE.Tokenizers.Native.tokenizer_from_tiktoken_buffer(
+                   buffer,
+                   opts[:tiktoken_encoding]
+                 ) do
+            {:ok, register_components(tokenizer, %{})}
+          end
       end
     end
   end
@@ -205,6 +213,16 @@ defmodule IREE.Tokenizers.Tokenizer do
   @spec supported_tiktoken_encodings() :: [binary()]
   def supported_tiktoken_encodings, do: @tiktoken_encodings
 
+  @spec init(Model.t()) :: result(t())
+  def init(%Model{} = model) do
+    with {:ok, buffer} <- tokenizer_json_from_model(model),
+         {:ok, tokenizer} <- from_buffer(buffer) do
+      {:ok, register_components(tokenizer, %{model: model})}
+    end
+  end
+
+  def init(_model), do: {:error, {:invalid_argument, "expected a model"}}
+
   @spec tiktoken_encoding_for_model(binary()) :: binary() | nil
   def tiktoken_encoding_for_model(model) when is_binary(model) do
     infer_tiktoken_encoding(model)
@@ -216,8 +234,21 @@ defmodule IREE.Tokenizers.Tokenizer do
   def encode(tokenizer, input, opts \\ [])
 
   def encode(%__MODULE__{} = tokenizer, input, opts) when is_binary(input) do
-    opts = Keyword.validate!(opts, add_special_tokens: true, track_offsets: false)
-    IREE.Tokenizers.Native.tokenizer_encode(tokenizer, input, opts)
+    opts =
+      Keyword.validate!(opts,
+        add_special_tokens: true,
+        track_offsets: false,
+        encoding_transformations: []
+      )
+
+    with {:ok, encoding} <-
+           IREE.Tokenizers.Native.tokenizer_encode(
+             tokenizer,
+             input,
+             Keyword.take(opts, [:add_special_tokens, :track_offsets])
+           ) do
+      {:ok, Encoding.transform(encoding, opts[:encoding_transformations])}
+    end
   end
 
   def encode(%__MODULE__{}, {_left, _right}, _opts),
@@ -230,11 +261,23 @@ defmodule IREE.Tokenizers.Tokenizer do
   def encode_batch(tokenizer, inputs, opts \\ [])
 
   def encode_batch(%__MODULE__{} = tokenizer, inputs, opts) when is_list(inputs) do
-    opts = Keyword.validate!(opts, add_special_tokens: true, track_offsets: false)
+    opts =
+      Keyword.validate!(opts,
+        add_special_tokens: true,
+        track_offsets: false,
+        encoding_transformations: []
+      )
 
     case Enum.find(inputs, &(not is_binary(&1))) do
       nil ->
-        IREE.Tokenizers.Native.tokenizer_encode_batch(tokenizer, inputs, opts)
+        with {:ok, encodings} <-
+               IREE.Tokenizers.Native.tokenizer_encode_batch(
+                 tokenizer,
+                 inputs,
+                 Keyword.take(opts, [:add_special_tokens, :track_offsets])
+               ) do
+          {:ok, Enum.map(encodings, &Encoding.transform(&1, opts[:encoding_transformations]))}
+        end
 
       {_left, _right} ->
         {:error, {:invalid_argument, "pair sequence inputs are not supported in v1"}}
@@ -277,6 +320,44 @@ defmodule IREE.Tokenizers.Tokenizer do
   def vocab_size(%__MODULE__{} = tokenizer),
     do: IREE.Tokenizers.Native.tokenizer_vocab_size(tokenizer)
 
+  @spec get_vocab(t(), keyword()) :: %{binary() => integer()}
+  def get_vocab(%__MODULE__{} = tokenizer, opts \\ []) do
+    _opts = Keyword.validate!(opts, with_added_tokens: true)
+
+    0..max(IREE.Tokenizers.Native.tokenizer_vocab_capacity(tokenizer) - 1, 0)
+    |> Enum.reduce(%{}, fn id, acc ->
+      case id_to_token(tokenizer, id) do
+        nil -> acc
+        token -> Map.put(acc, token, id)
+      end
+    end)
+  end
+
+  @spec get_vocab_size(t(), keyword()) :: non_neg_integer()
+  def get_vocab_size(%__MODULE__{} = tokenizer, opts \\ []) do
+    _opts = Keyword.validate!(opts, with_added_tokens: true)
+    vocab_size(tokenizer)
+  end
+
+  @spec get_model(t()) :: Model.t()
+  def get_model(%__MODULE__{} = tokenizer) do
+    case ComponentRegistry.get(tokenizer.resource)[:model] do
+      %Model{} = model ->
+        model
+
+      nil ->
+        %Model{type: model_type(tokenizer), info: %{"model_type" => model_type(tokenizer)}}
+    end
+  end
+
+  @spec set_model(t(), Model.t()) :: t()
+  def set_model(%__MODULE__{} = _tokenizer, %Model{} = model) do
+    case init(model) do
+      {:ok, tokenizer} -> tokenizer
+      {:error, {kind, message}} -> raise RuntimeError, "#{kind}: #{message}"
+    end
+  end
+
   @spec model_type(t()) :: binary()
   def model_type(%__MODULE__{} = tokenizer),
     do: IREE.Tokenizers.Native.tokenizer_model_type(tokenizer)
@@ -309,6 +390,77 @@ defmodule IREE.Tokenizers.Tokenizer do
 
   defp maybe_put_auth(headers, nil), do: headers
   defp maybe_put_auth(headers, token), do: [{"authorization", "Bearer #{token}"} | headers]
+
+  defp register_components(tokenizer, components) do
+    ComponentRegistry.put(tokenizer.resource, components)
+    tokenizer
+  end
+
+  defp tokenizer_json_from_model(%Model{type: "BPE", spec: spec}) do
+    {:ok,
+     Jason.encode!(%{
+       "version" => "1.0",
+       "model" => %{
+         "type" => "BPE",
+         "vocab" => spec["vocab"],
+         "merges" => Enum.map(spec["merges"], &Enum.join(&1, " ")),
+         "unk_token" => spec["unk_token"],
+         "continuing_subword_prefix" => spec["continuing_subword_prefix"],
+         "end_of_word_suffix" => spec["end_of_word_suffix"],
+         "byte_fallback" => spec["byte_fallback"],
+         "fuse_unk" => spec["fuse_unk"]
+       }
+     })}
+  end
+
+  defp tokenizer_json_from_model(%Model{type: "WordPiece", spec: spec}) do
+    {:ok,
+     Jason.encode!(%{
+       "version" => "1.0",
+       "model" => %{
+         "type" => "WordPiece",
+         "unk_token" => spec["unk_token"],
+         "continuing_subword_prefix" => spec["continuing_subword_prefix"],
+         "max_input_chars_per_word" => spec["max_input_chars_per_word"],
+         "vocab" => spec["vocab"]
+       },
+       "pre_tokenizer" => %{"type" => "Whitespace"},
+       "decoder" => %{
+         "type" => "WordPiece",
+         "prefix" => spec["continuing_subword_prefix"],
+         "cleanup" => false
+       }
+     })}
+  end
+
+  defp tokenizer_json_from_model(%Model{type: "Unigram", spec: spec}) do
+    {:ok,
+     Jason.encode!(%{
+       "version" => "1.0",
+       "model" => %{
+         "type" => "Unigram",
+         "vocab" => spec["vocab"],
+         "unk_id" => spec["unk_id"],
+         "byte_fallback" => spec["byte_fallback"]
+       },
+       "pre_tokenizer" => %{
+         "type" => "Metaspace",
+         "replacement" => "▁",
+         "prepend_scheme" => "always",
+         "split" => true
+       },
+       "decoder" => %{
+         "type" => "Metaspace",
+         "replacement" => "▁",
+         "prepend_scheme" => "always",
+         "split" => true
+       }
+     })}
+  end
+
+  defp tokenizer_json_from_model(%Model{} = model) do
+    {:error, {:unimplemented, "unsupported model type #{inspect(model.type)}"}}
+  end
 
   defp validate_load_options(opts) do
     opts =
