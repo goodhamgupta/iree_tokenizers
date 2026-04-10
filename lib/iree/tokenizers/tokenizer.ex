@@ -677,6 +677,11 @@ defmodule IREE.Tokenizers.Tokenizer do
   end
 
   defp request(http_client, http_opts) do
+    has_auth? =
+      http_opts
+      |> Keyword.get(:headers, [])
+      |> Enum.any?(fn {key, _value} -> String.downcase(to_string(key)) == "authorization" end)
+
     case http_client.request(http_opts) do
       {:ok, response} ->
         case response.status do
@@ -686,7 +691,14 @@ defmodule IREE.Tokenizers.Tokenizer do
           404 ->
             {:error, {:not_found, "resource not found"}}
 
-          status when status in [401, 403] ->
+          401 ->
+            if has_auth? do
+              {:error, {:permission_denied, "access denied"}}
+            else
+              {:error, {:not_found, "resource not found or requires authentication"}}
+            end
+
+          403 ->
             {:error, {:permission_denied, "access denied"}}
 
           other ->

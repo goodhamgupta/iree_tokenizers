@@ -416,6 +416,27 @@ defmodule IREETokenizers.TokenizerTest do
              )
   end
 
+  test "maps a 401 without auth to not_found-or-auth-needed", %{agent: agent} do
+    Agent.update(agent, fn _ ->
+      %{
+        requests: [],
+        head_response: {:ok, %{status: 401, headers: [], body: "missing"}},
+        get_response: {:ok, %{status: 401, headers: [], body: "missing"}}
+      }
+    end)
+
+    cache_dir =
+      Path.join(System.tmp_dir!(), "iree-tokenizers-#{System.unique_integer([:positive])}")
+
+    File.rm_rf!(cache_dir)
+
+    assert {:error, {:not_found, "resource not found or requires authentication"}} =
+             Tokenizer.from_pretrained("owner/missing",
+               cache_dir: cache_dir,
+               http_client: {MockHTTPClient, agent: agent}
+             )
+  end
+
   test "maps a 403 download to permission_denied", %{agent: agent} do
     Agent.update(agent, fn _ ->
       %{
@@ -434,6 +455,28 @@ defmodule IREETokenizers.TokenizerTest do
              Tokenizer.from_pretrained("owner/private",
                cache_dir: cache_dir,
                http_client: {MockHTTPClient, agent: agent}
+             )
+  end
+
+  test "maps a 401 with auth to permission_denied", %{agent: agent} do
+    Agent.update(agent, fn _ ->
+      %{
+        requests: [],
+        head_response: {:ok, %{status: 401, headers: [], body: "forbidden"}},
+        get_response: {:ok, %{status: 401, headers: [], body: "forbidden"}}
+      }
+    end)
+
+    cache_dir =
+      Path.join(System.tmp_dir!(), "iree-tokenizers-#{System.unique_integer([:positive])}")
+
+    File.rm_rf!(cache_dir)
+
+    assert {:error, {:permission_denied, "access denied"}} =
+             Tokenizer.from_pretrained("owner/private",
+               cache_dir: cache_dir,
+               http_client: {MockHTTPClient, agent: agent},
+               token: "secret"
              )
   end
 
