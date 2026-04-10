@@ -102,6 +102,21 @@ The important result is that the implementation remains in the same performance
 class and preserves the expected large speedup over the Elixir `tokenizers`
 package.
 
+#### Local fixture comparison against `elixir-nx/tokenizers`
+
+The local fixture comparison script now writes:
+- [`bench/results/tokenizers_compare.md`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare.md?raw=1)
+- [`bench/results/tokenizers_compare_encode.svg`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare_encode.svg?raw=1)
+- [`bench/results/tokenizers_compare_decode.svg`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare_decode.svg?raw=1)
+
+Encode throughput chart:
+
+![Fixture encode comparison](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare_encode.svg?raw=1)
+
+Decode throughput chart:
+
+![Fixture decode comparison](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare_decode.svg?raw=1)
+
 #### Model latency comparison
 
 The current checked-in local snapshot from
@@ -151,6 +166,8 @@ Run the generic encode/decode comparison:
 ```bash
 mix run compare.exs
 ```
+
+This generates the fixture comparison markdown and SVG charts in `bench/results/`.
 
 Generate the multi-model latency/speedup graphs:
 

@@ -70,14 +70,19 @@ defmodule IREETokenizersBench.Support do
   def format_tokens_per_second(value), do: "#{Float.round(value, 1)} tokens/sec"
 
   def format_ms(value) do
-    rounded =
-      cond do
-        value >= 100 -> Float.round(value, 0)
-        value >= 10 -> Float.round(value, 1)
-        true -> Float.round(value, 2)
-      end
+    cond do
+      value < 1 ->
+        "#{Float.round(value * 1_000, 1)} μs"
 
-    "#{rounded} ms"
+      value >= 100 ->
+        "#{Float.round(value, 0)} ms"
+
+      value >= 10 ->
+        "#{Float.round(value, 1)} ms"
+
+      true ->
+        "#{Float.round(value, 2)} ms"
+    end
   end
 
   def render_throughput_svg(path, subtitle, bars) do
@@ -226,6 +231,61 @@ defmodule IREETokenizersBench.Support do
     File.write!(path, svg)
   end
 
+  def render_dual_series_svg(path, title, subtitle, rows, left_series, right_series) do
+    width = 1120
+    header_height = 96
+    row_height = 72
+    height = header_height + row_height * length(rows) + 36
+    chart_left = 280
+    chart_width = 780
+
+    max_value =
+      rows
+      |> Enum.flat_map(fn row -> [row[left_series.key], row[right_series.key]] end)
+      |> Enum.max(fn -> 1.0 end)
+
+    legend = """
+    <rect x="#{chart_left}" y="24" width="14" height="14" rx="3" fill="#{left_series.color}" />
+    <text x="#{chart_left + 22}" y="36" fill="#{Map.get(left_series, :text_fill, "#D9E1F2")}" font-family="system-ui, sans-serif" font-size="13">#{left_series.label}</text>
+    <rect x="#{chart_left + 140}" y="24" width="14" height="14" rx="3" fill="#{right_series.color}" />
+    <text x="#{chart_left + 162}" y="36" fill="#{Map.get(right_series, :text_fill, "#D9E1F2")}" font-family="system-ui, sans-serif" font-size="13">#{right_series.label}</text>
+    """
+
+    body =
+      rows
+      |> Enum.with_index()
+      |> Enum.map_join("\n", fn {row, index} ->
+        y = header_height + index * row_height
+        left_value = row[left_series.key]
+        right_value = row[right_series.key]
+        left_width = chart_width * (left_value / max_value)
+        right_width = chart_width * (right_value / max_value)
+
+        """
+        <text x="18" y="#{y + 24}" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="15">#{row.label}</text>
+        <text x="18" y="#{y + 44}" fill="#7F8796" font-family="system-ui, sans-serif" font-size="12">#{row.subtitle}</text>
+        <rect x="#{chart_left}" y="#{y}" width="#{Float.round(left_width, 2)}" height="16" rx="4" fill="#{left_series.color}" />
+        <text x="#{chart_left + left_width + 10}" y="#{y + 13}" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">#{left_series.formatter.(left_value)}</text>
+        <rect x="#{chart_left}" y="#{y + 26}" width="#{Float.round(right_width, 2)}" height="16" rx="4" fill="#{right_series.color}" />
+        <text x="#{chart_left + right_width + 10}" y="#{y + 39}" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">#{right_series.formatter.(right_value)}</text>
+        <text x="#{width - 120}" y="#{y + 24}" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="13" text-anchor="end">#{Float.round(row.speedup, 2)}x</text>
+        <text x="#{width - 120}" y="#{y + 42}" fill="#7F8796" font-family="system-ui, sans-serif" font-size="11" text-anchor="end">IREE speedup</text>
+        """
+      end)
+
+    svg = """
+    <svg xmlns="http://www.w3.org/2000/svg" width="#{width}" height="#{height}" viewBox="0 0 #{width} #{height}">
+      <rect width="#{width}" height="#{height}" rx="10" fill="#0E1118" />
+      <text x="18" y="36" fill="#F7FAFF" font-family="system-ui, sans-serif" font-size="22">#{title}</text>
+      <text x="18" y="62" fill="#7F8796" font-family="system-ui, sans-serif" font-size="14">#{subtitle}</text>
+      #{legend}
+      #{body}
+    </svg>
+    """
+
+    File.write!(path, svg)
+  end
+
   def load_tokenizers(repo, opts \\ []) do
     with {:ok, iree_tokenizer} <- IREETokenizer.from_pretrained(repo, iree_pretrained_opts(opts)),
          {:ok, tokenizers_tokenizer} <-
@@ -355,7 +415,7 @@ defmodule IREETokenizersBench.Support do
         seconds: max((now - started_at) / 1_000_000, 0.000001)
       }
     else
-      {:ok, _} = fun.()
+      _ = fun.()
       do_run_for(fun, tokens_per_run, deadline, started_at, tokens + tokens_per_run, runs + 1)
     end
   end
