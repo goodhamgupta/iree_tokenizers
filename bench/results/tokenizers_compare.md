@@ -7,16 +7,16 @@ Local fixture: `test/fixtures/bpe_bytelevel_minimal.json`
 | Workload | Input bytes | IREE.Tokenizers | elixir-nx/tokenizers | Speedup |
 | --- | ---: | ---: | ---: | ---: |
 | Short | 11 | 4.0 μs | 4.0 μs | 1.0x |
-| Medium | 1808 | 104.0 μs | 258.0 μs | 2.48x |
-| Long | 32000 | 1.19 ms | 4.25 ms | 3.57x |
+| Medium | 1808 | 93.0 μs | 256.0 μs | 2.75x |
+| Long | 32000 | 1.23 ms | 4.35 ms | 3.54x |
 
 ## Decode latency
 
 | Workload | IREE / tokenizers ids | IREE.Tokenizers | elixir-nx/tokenizers | Speedup |
 | --- | ---: | ---: | ---: | ---: |
-| Short | 4 / 4 | 4.0 μs | 2.0 μs | 0.5x |
-| Medium | 920 / 1680 | 8.0 μs | 129.0 μs | 16.13x |
-| Long | 16016 / 30720 | 140.0 μs | 2.06 ms | 14.69x |
+| Short | 4 / 4 | 2.0 μs | 4.0 μs | 2.0x |
+| Medium | 920 / 1680 | 11.0 μs | 137.0 μs | 12.45x |
+| Long | 16016 / 30720 | 104.0 μs | 2.2 ms | 21.18x |
 
 ## Notes
 

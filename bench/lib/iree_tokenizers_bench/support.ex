@@ -232,12 +232,15 @@ defmodule IREETokenizersBench.Support do
   end
 
   def render_dual_series_svg(path, title, subtitle, rows, left_series, right_series) do
-    width = 1120
-    header_height = 96
-    row_height = 72
+    width = 1280
+    header_height = 116
+    row_height = 78
     height = header_height + row_height * length(rows) + 36
-    chart_left = 280
-    chart_width = 780
+    chart_left = 320
+    chart_width = 720
+    speedup_x = width - 40
+    speedup_label_x = width - 120
+    speedup_guard_x = width - 220
 
     max_value =
       rows
@@ -245,10 +248,10 @@ defmodule IREETokenizersBench.Support do
       |> Enum.max(fn -> 1.0 end)
 
     legend = """
-    <rect x="#{chart_left}" y="24" width="14" height="14" rx="3" fill="#{left_series.color}" />
-    <text x="#{chart_left + 22}" y="36" fill="#{Map.get(left_series, :text_fill, "#D9E1F2")}" font-family="system-ui, sans-serif" font-size="13">#{left_series.label}</text>
-    <rect x="#{chart_left + 140}" y="24" width="14" height="14" rx="3" fill="#{right_series.color}" />
-    <text x="#{chart_left + 162}" y="36" fill="#{Map.get(right_series, :text_fill, "#D9E1F2")}" font-family="system-ui, sans-serif" font-size="13">#{right_series.label}</text>
+    <rect x="18" y="76" width="14" height="14" rx="3" fill="#{left_series.color}" />
+    <text x="40" y="88" fill="#{Map.get(left_series, :text_fill, "#D9E1F2")}" font-family="system-ui, sans-serif" font-size="13">#{left_series.label}</text>
+    <rect x="188" y="76" width="14" height="14" rx="3" fill="#{right_series.color}" />
+    <text x="210" y="88" fill="#{Map.get(right_series, :text_fill, "#D9E1F2")}" font-family="system-ui, sans-serif" font-size="13">#{right_series.label}</text>
     """
 
     body =
@@ -260,16 +263,24 @@ defmodule IREETokenizersBench.Support do
         right_value = row[right_series.key]
         left_width = chart_width * (left_value / max_value)
         right_width = chart_width * (right_value / max_value)
+        left_label = left_series.formatter.(left_value)
+        right_label = right_series.formatter.(right_value)
+
+        {left_value_x, left_anchor, left_fill} =
+          value_label_position(chart_left, left_width, left_label, speedup_guard_x)
+
+        {right_value_x, right_anchor, right_fill} =
+          value_label_position(chart_left, right_width, right_label, speedup_guard_x)
 
         """
         <text x="18" y="#{y + 24}" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="15">#{row.label}</text>
         <text x="18" y="#{y + 44}" fill="#7F8796" font-family="system-ui, sans-serif" font-size="12">#{row.subtitle}</text>
         <rect x="#{chart_left}" y="#{y}" width="#{Float.round(left_width, 2)}" height="16" rx="4" fill="#{left_series.color}" />
-        <text x="#{chart_left + left_width + 10}" y="#{y + 13}" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">#{left_series.formatter.(left_value)}</text>
+        <text x="#{left_value_x}" y="#{y + 13}" text-anchor="#{left_anchor}" fill="#{left_fill}" font-family="system-ui, sans-serif" font-size="12">#{left_label}</text>
         <rect x="#{chart_left}" y="#{y + 26}" width="#{Float.round(right_width, 2)}" height="16" rx="4" fill="#{right_series.color}" />
-        <text x="#{chart_left + right_width + 10}" y="#{y + 39}" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">#{right_series.formatter.(right_value)}</text>
-        <text x="#{width - 120}" y="#{y + 24}" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="13" text-anchor="end">#{Float.round(row.speedup, 2)}x</text>
-        <text x="#{width - 120}" y="#{y + 42}" fill="#7F8796" font-family="system-ui, sans-serif" font-size="11" text-anchor="end">IREE speedup</text>
+        <text x="#{right_value_x}" y="#{y + 39}" text-anchor="#{right_anchor}" fill="#{right_fill}" font-family="system-ui, sans-serif" font-size="12">#{right_label}</text>
+        <text x="#{speedup_x}" y="#{y + 24}" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="13" text-anchor="end">#{Float.round(row.speedup, 2)}x</text>
+        <text x="#{speedup_label_x}" y="#{y + 42}" fill="#7F8796" font-family="system-ui, sans-serif" font-size="11" text-anchor="end">IREE speedup</text>
         """
       end)
 
@@ -386,6 +397,17 @@ defmodule IREETokenizersBench.Support do
     <rect x="#{chart_left}" y="#{y + offset}" width="#{Float.round(width, 2)}" height="14" rx="4" fill="#{color}" />
     <text x="#{chart_left + width + 10}" y="#{y + offset + 11}" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">#{prefix}: #{format_ms(value)}</text>
     """
+  end
+
+  defp value_label_position(chart_left, bar_width, label, guard_x) do
+    estimated_label_width = max(String.length(label) * 7, 28)
+    outside_x = chart_left + bar_width + 10
+
+    if bar_width > estimated_label_width + 18 and outside_x + estimated_label_width > guard_x do
+      {chart_left + bar_width - 10, "end", "#F7FAFF"}
+    else
+      {outside_x, "start", "#A7B0C3"}
+    end
   end
 
   defp timed_call(fun) do

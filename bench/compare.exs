@@ -159,7 +159,7 @@ Support.render_dual_series_svg(
   "IREE vs tokenizers decode latency",
   "Local minimal BPE fixture, lower is better",
   decode_rows,
-  %{key: :iree_ms, label: "IREE.Tokenizers", color: "#35C296", formatter: &Support.format_ms/1},
+  %{key: :iree_ms, label: "IREE.Tokenizers", color: "#5A9BF6", formatter: &Support.format_ms/1},
   %{key: :tokenizers_ms, label: "elixir-nx/tokenizers", color: "#FF914D", formatter: &Support.format_ms/1}
 )
 
