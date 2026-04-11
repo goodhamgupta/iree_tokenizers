@@ -26,6 +26,7 @@ V1 is intentionally inference-only.
 - Deferred:
   - pair-sequence encode input
   - training and tokenizer mutation APIs
+  - full `elixir-nx/tokenizers` configuration surface parity
 
 ## Repository Usage
 
@@ -126,13 +127,37 @@ The SentencePiece-specific comparison script writes:
 - [`bench/results/sentencepiece_compare_encode.svg`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/sentencepiece_compare_encode.svg?raw=1)
 - [`bench/results/sentencepiece_compare_decode.svg`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/sentencepiece_compare_decode.svg?raw=1)
 
-Encode throughput chart:
+Fixture encode latency chart:
 
 ![Fixture encode comparison](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare_encode.svg?raw=1)
 
-Decode throughput chart:
+Fixture decode latency chart:
 
 ![Fixture decode comparison](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare_decode.svg?raw=1)
+
+#### SentencePiece `.model` comparison
+
+The SentencePiece-specific comparison script checks direct `.model` loading against the official
+[`tokenizers`](https://hex.pm/packages/tokenizers) package loaded from the corresponding
+`tokenizer.json`.
+
+Current checked-in results from
+[`bench/results/sentencepiece_compare.md`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/sentencepiece_compare.md?raw=1):
+
+| Model | Repo | Input bytes | Output ids | IREE `.model` | `tokenizers` | Speedup |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `T5-small (SentencePiece Unigram)` encode | `google-t5/t5-small` | `52` | `10` | `12.0 μs` | `35.0 μs` | `2.92x` |
+| `LLaMA tokenizer (SentencePiece BPE)` encode | `hf-internal-testing/llama-tokenizer` | `44` | `12` | `15.0 μs` | `16.0 μs` | `1.07x` |
+| `T5-small (SentencePiece Unigram)` decode | `google-t5/t5-small` | `52` | `10` | `4.0 μs` | `3.0 μs` | `0.75x` |
+| `LLaMA tokenizer (SentencePiece BPE)` decode | `hf-internal-testing/llama-tokenizer` | `44` | `12` | `9.0 μs` | `12.0 μs` | `1.33x` |
+
+SentencePiece encode latency chart:
+
+![SentencePiece encode comparison](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/sentencepiece_compare_encode.svg?raw=1)
+
+SentencePiece decode latency chart:
+
+![SentencePiece decode comparison](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/sentencepiece_compare_decode.svg?raw=1)
 
 #### Model latency comparison
 

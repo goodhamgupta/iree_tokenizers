@@ -232,15 +232,15 @@ defmodule IREETokenizersBench.Support do
   end
 
   def render_dual_series_svg(path, title, subtitle, rows, left_series, right_series) do
-    width = 1280
+    width = 1360
     header_height = 116
     row_height = 78
     height = header_height + row_height * length(rows) + 36
     chart_left = 320
-    chart_width = 720
+    chart_width = 760
     speedup_x = width - 40
     speedup_label_x = width - 120
-    speedup_guard_x = width - 220
+    speedup_guard_x = width - 260
 
     max_value =
       rows
