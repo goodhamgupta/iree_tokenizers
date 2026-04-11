@@ -166,7 +166,15 @@ fn bpe_model_json(model: &SentencePieceModel, trainer: &TrainerSpec) -> Result<V
         .pieces()
         .iter()
         .enumerate()
-        .map(|(index, piece)| (piece_text(piece).to_string(), index))
+        .map(|(index, piece)| {
+            (
+                piece_text(piece).to_string(),
+                BpePiece {
+                    id: index,
+                    score: piece.score.unwrap_or(f32::NEG_INFINITY),
+                },
+            )
+        })
         .collect::<std::collections::HashMap<_, _>>();
 
     let merges = reconstruct_sentencepiece_bpe_merges(&merge_vocab);
@@ -179,7 +187,7 @@ fn bpe_model_json(model: &SentencePieceModel, trainer: &TrainerSpec) -> Result<V
         "unk_token": unk_token,
         "continuing_subword_prefix": Value::Null,
         "end_of_word_suffix": Value::Null,
-        "fuse_unk": false,
+        "fuse_unk": true,
         "byte_fallback": trainer.byte_fallback.unwrap_or(false),
         "vocab": vocab,
         "merges": merges
@@ -305,6 +313,12 @@ fn sentencepiece_bpe_decoder_json(trainer: &TrainerSpec) -> Value {
     }
 
     decoders.push(json!({"type": "Fuse"}));
+    decoders.push(json!({
+        "type": "Strip",
+        "content": " ",
+        "start": 1,
+        "stop": 0
+    }));
 
     json!({
         "type": "Sequence",
@@ -420,19 +434,25 @@ fn add_dummy_prefix(model: &SentencePieceModel) -> bool {
         .unwrap_or(true)
 }
 
-fn reconstruct_sentencepiece_bpe_merges(
-    vocab: &std::collections::HashMap<String, usize>,
-) -> Vec<String> {
-    let mut merges = Vec::<(String, String, usize)>::new();
+#[derive(Clone, Copy)]
+struct BpePiece {
+    id: usize,
+    score: f32,
+}
 
-    for (merge_piece, piece_id) in vocab {
+fn reconstruct_sentencepiece_bpe_merges(
+    vocab: &std::collections::HashMap<String, BpePiece>,
+) -> Vec<String> {
+    let mut merges = Vec::<(String, String, BpePiece, usize, usize)>::new();
+
+    for (merge_piece, piece) in vocab {
         let mut boundaries = merge_piece
             .char_indices()
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
         boundaries.push(merge_piece.len());
 
-        let mut local = Vec::<(String, String, usize)>::new();
+        let mut local = Vec::<(String, String, BpePiece, usize, usize)>::new();
         for &boundary in boundaries
             .iter()
             .skip(1)
@@ -441,31 +461,127 @@ fn reconstruct_sentencepiece_bpe_merges(
             let left = &merge_piece[..boundary];
             let right = &merge_piece[boundary..];
 
-            if vocab.contains_key(left) && vocab.contains_key(right) {
-                local.push((left.to_string(), right.to_string(), *piece_id));
+            if let (Some(left_piece), Some(right_piece)) = (vocab.get(left), vocab.get(right)) {
+                local.push((
+                    left.to_string(),
+                    right.to_string(),
+                    *piece,
+                    left_piece.id,
+                    right_piece.id,
+                ));
             }
         }
 
-        local.sort_by(|left, right| {
-            (vocab[&left.0], vocab[&left.1]).cmp(&(vocab[&right.0], vocab[&right.1]))
-        });
+        local.sort_by(|left, right| (left.3, left.4).cmp(&(right.3, right.4)));
         merges.extend(local);
     }
 
     merges.sort_by(|left, right| {
-        (left.2, left.0.chars().count(), left.1.chars().count()).cmp(&(
-            right.2,
-            right.0.chars().count(),
-            right.1.chars().count(),
-        ))
+        right
+            .2
+            .score
+            .partial_cmp(&left.2.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.2.id.cmp(&right.2.id))
+            .then_with(|| left.3.cmp(&right.3))
+            .then_with(|| left.4.cmp(&right.4))
     });
 
     merges
         .into_iter()
-        .map(|(left, right, _)| format!("{left} {right}"))
+        .map(|(left, right, _, _, _)| format!("{left} {right}"))
         .collect()
 }
 
 fn piece_text(piece: &sentencepiece_model::SentencePiece) -> &str {
     piece.piece.as_deref().unwrap_or("")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::Read;
+
+    use sentencepiece::SentencePieceProcessor;
+
+    use super::model_to_tokenizer_json;
+    use crate::{
+        error::check_status,
+        ffi,
+        tokenizer::{
+            decode_sentencepiece_bpe, encode_impl, tokenizer_metadata_from_hf_json, DecodeStrategy,
+            TokenizerResource,
+        },
+    };
+
+    fn run_enabled() -> bool {
+        matches!(
+            std::env::var("RUN_SENTENCEPIECE_INTEGRATION").as_deref(),
+            Ok("1") | Ok("true")
+        )
+    }
+
+    fn fetch(url: &str) -> Vec<u8> {
+        let mut reader = ureq::get(url).call().unwrap().into_reader();
+        let mut bytes = Vec::new();
+        reader.read_to_end(&mut bytes).unwrap();
+        bytes
+    }
+
+    fn load_iree_tokenizer_from_json(json: &[u8]) -> TokenizerResource {
+        let mut raw = std::ptr::null_mut();
+        check_status(unsafe {
+            ffi::iree_tokenizer_from_huggingface_json(
+                ffi::make_string_view(json),
+                ffi::system_allocator(),
+                &mut raw,
+            )
+        })
+        .unwrap();
+
+        let metadata = tokenizer_metadata_from_hf_json(json);
+
+        TokenizerResource {
+            ptr: raw,
+            model_type: "BPE".to_string(),
+            decode_strategy: metadata.decode_strategy,
+        }
+    }
+
+    #[test]
+    fn llama_sentencepiece_model_matches_sentencepiece_reference() {
+        if !run_enabled() {
+            return;
+        }
+
+        let model_bytes = fetch(
+            "https://huggingface.co/hf-internal-testing/llama-tokenizer/resolve/main/tokenizer.model",
+        );
+
+        let spp = SentencePieceProcessor::from_serialized_proto(&model_bytes).unwrap();
+        let tokenizer_json = model_to_tokenizer_json(&model_bytes).unwrap();
+        let tokenizer = load_iree_tokenizer_from_json(&tokenizer_json);
+
+        let texts = [
+            "The quick brown fox jumps over the lazy dog.",
+            " The quick brown fox jumps over the lazy dog.",
+            "The  quick brown fox\n jumps over the lazy dog.",
+        ];
+
+        for text in texts {
+            let spp_pieces = spp.encode(text).unwrap();
+            let spp_ids: Vec<i32> = spp_pieces.iter().map(|piece| piece.id as i32).collect();
+
+            let encoding = encode_impl(&tokenizer, text.as_bytes(), false, false).unwrap();
+            assert_eq!(encoding.ids, spp_ids, "encode mismatch for {text:?}");
+
+            let decoded = decode_sentencepiece_bpe(&tokenizer, &encoding.ids, false).unwrap();
+            let spp_decoded = spp
+                .decode_piece_ids(&spp_ids.iter().map(|id| *id as u32).collect::<Vec<_>>())
+                .unwrap();
+
+            assert_eq!(decoded, spp_decoded, "decode mismatch for {text:?}");
+        }
+
+        assert_eq!(tokenizer.decode_strategy, DecodeStrategy::SentencePieceBpe);
+    }
 }

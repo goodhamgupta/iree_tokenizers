@@ -29,6 +29,7 @@ impl EncodeStreamState {
     pub fn new(
         tokenizer: ResourceArc<TokenizerResource>,
         add_special_tokens: bool,
+        max_chunk_bytes: usize,
     ) -> Result<Self> {
         let mut state_size = 0usize;
         check_status(unsafe {
@@ -36,7 +37,8 @@ impl EncodeStreamState {
         })?;
 
         let mut state_storage = vec![0u8; state_size];
-        let mut transform_buffer = vec![0u8; ffi::transform_buffer_recommended_size(8192)];
+        let mut transform_buffer =
+            vec![0u8; ffi::transform_buffer_recommended_size(max_chunk_bytes)];
         let mut state = std::ptr::null_mut();
         let mut flags = ffi::encode_flag_bits::AT_INPUT_START;
         if add_special_tokens {
@@ -82,45 +84,54 @@ impl EncodeStreamState {
             offset += consumed;
         }
 
-        loop {
-            let (_consumed, produced) = encode_feed_once(self.state, &[], &mut ids_buffer)?;
-
-            if produced == 0 {
-                break;
-            }
-            all_ids.extend_from_slice(&ids_buffer[..produced]);
-        }
-
         Ok(all_ids)
     }
 
     fn finalize(self) -> Result<Vec<i32>> {
-        let mut ids = vec![0i32; 256];
+        let mut all_ids = Vec::new();
 
         loop {
-            let mut produced = 0usize;
-            let status = unsafe {
-                ffi::iree_tokenizer_encode_state_finalize(
-                    self.state,
-                    ffi::iree_tokenizer_token_output_t {
-                        capacity: ids.len(),
-                        token_ids: ids.as_mut_ptr(),
-                        token_offsets: std::ptr::null_mut(),
-                        type_ids: std::ptr::null_mut(),
-                    },
-                    &mut produced,
-                )
-            };
+            let mut ids = vec![0i32; 256];
 
-            if is_resource_exhausted(status) {
-                unsafe { ffi::iree_status_ignore(status) };
-                ids.resize(ids.len() * 2, 0);
-                continue;
+            loop {
+                let mut produced = 0usize;
+                let status = unsafe {
+                    ffi::iree_tokenizer_encode_state_finalize(
+                        self.state,
+                        ffi::iree_tokenizer_token_output_t {
+                            capacity: ids.len(),
+                            token_ids: ids.as_mut_ptr(),
+                            token_offsets: std::ptr::null_mut(),
+                            type_ids: std::ptr::null_mut(),
+                        },
+                        &mut produced,
+                    )
+                };
+
+                if is_resource_exhausted(status) {
+                    unsafe { ffi::iree_status_ignore(status) };
+                    ids.resize(ids.len() * 2, 0);
+                    continue;
+                }
+
+                check_status(status)?;
+                ids.truncate(produced);
+                all_ids.extend_from_slice(&ids);
+
+                let has_pending =
+                    unsafe { ffi::iree_tokenizer_encode_state_has_pending(self.state) };
+                if !has_pending {
+                    return Ok(all_ids);
+                }
+
+                if produced == 0 {
+                    return Err(invalid_argument(
+                        "encode stream finalize made no progress while pending data remained",
+                    ));
+                }
+
+                break;
             }
-
-            check_status(status)?;
-            ids.truncate(produced);
-            return Ok(ids);
         }
     }
 }

@@ -9,20 +9,20 @@
 
   <text x="18" y="140" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="15">T5-small (SentencePiece Unigram)</text>
 <text x="18" y="160" fill="#7F8796" font-family="system-ui, sans-serif" font-size="12">52 bytes, 10 ids</text>
-<rect x="320" y="116" width="325.71" height="16" rx="4" fill="#5A9BF6" />
-<text x="655.7142857142858" y="129" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">3.0 μs</text>
-<rect x="320" y="142" width="217.14" height="16" rx="4" fill="#FF914D" />
-<text x="547.1428571428571" y="155" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">2.0 μs</text>
-<text x="1320" y="140" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="13" text-anchor="end">0.67x</text>
+<rect x="320" y="116" width="448.41" height="16" rx="4" fill="#5A9BF6" />
+<text x="778.4082253908264" y="129" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">4.3 μs</text>
+<rect x="320" y="142" width="424.29" height="16" rx="4" fill="#FF914D" />
+<text x="754.2868785656071" y="155" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">4.1 μs</text>
+<text x="1320" y="140" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="13" text-anchor="end">0.95x</text>
 <text x="1240" y="158" fill="#7F8796" font-family="system-ui, sans-serif" font-size="11" text-anchor="end">IREE speedup</text>
 
 <text x="18" y="218" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="15">LLaMA tokenizer (SentencePiece BPE)</text>
 <text x="18" y="238" fill="#7F8796" font-family="system-ui, sans-serif" font-size="12">44 bytes, 12 ids</text>
-<rect x="320" y="194" width="434.29" height="16" rx="4" fill="#5A9BF6" />
-<text x="764.2857142857142" y="207" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">4.0 μs</text>
+<rect x="320" y="194" width="420.99" height="16" rx="4" fill="#5A9BF6" />
+<text x="750.9930454471939" y="207" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">4.0 μs</text>
 <rect x="320" y="220" width="760.0" height="16" rx="4" fill="#FF914D" />
-<text x="1070.0" y="233" text-anchor="end" fill="#F7FAFF" font-family="system-ui, sans-serif" font-size="12">7.0 μs</text>
-<text x="1320" y="218" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="13" text-anchor="end">1.75x</text>
+<text x="1070.0" y="233" text-anchor="end" fill="#F7FAFF" font-family="system-ui, sans-serif" font-size="12">7.3 μs</text>
+<text x="1320" y="218" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="13" text-anchor="end">1.81x</text>
 <text x="1240" y="236" fill="#7F8796" font-family="system-ui, sans-serif" font-size="11" text-anchor="end">IREE speedup</text>
 
 </svg>

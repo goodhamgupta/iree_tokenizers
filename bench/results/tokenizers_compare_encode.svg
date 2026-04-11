@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="386" viewBox="0 0 1280 386">
-  <rect width="1280" height="386" rx="10" fill="#0E1118" />
+<svg xmlns="http://www.w3.org/2000/svg" width="1360" height="386" viewBox="0 0 1360 386">
+  <rect width="1360" height="386" rx="10" fill="#0E1118" />
   <text x="18" y="36" fill="#F7FAFF" font-family="system-ui, sans-serif" font-size="22">IREE vs tokenizers encode latency</text>
   <text x="18" y="62" fill="#7F8796" font-family="system-ui, sans-serif" font-size="14">Local minimal BPE fixture, lower is better</text>
   <rect x="18" y="76" width="14" height="14" rx="3" fill="#5A9BF6" />
@@ -9,29 +9,29 @@
 
   <text x="18" y="140" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="15">Short</text>
 <text x="18" y="160" fill="#7F8796" font-family="system-ui, sans-serif" font-size="12">11 bytes input, 4 / 4 output ids</text>
-<rect x="320" y="116" width="0.66" height="16" rx="4" fill="#5A9BF6" />
-<text x="330.6625258799172" y="129" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">4.0 μs</text>
-<rect x="320" y="142" width="0.66" height="16" rx="4" fill="#FF914D" />
-<text x="330.6625258799172" y="155" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">4.0 μs</text>
-<text x="1240" y="140" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="13" text-anchor="end">1.0x</text>
-<text x="1160" y="158" fill="#7F8796" font-family="system-ui, sans-serif" font-size="11" text-anchor="end">IREE speedup</text>
+<rect x="320" y="116" width="0.86" height="16" rx="4" fill="#5A9BF6" />
+<text x="330.86438704721115" y="129" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">5.2 μs</text>
+<rect x="320" y="142" width="0.87" height="16" rx="4" fill="#FF914D" />
+<text x="330.87454484337223" y="155" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">5.3 μs</text>
+<text x="1320" y="140" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="13" text-anchor="end">1.01x</text>
+<text x="1240" y="158" fill="#7F8796" font-family="system-ui, sans-serif" font-size="11" text-anchor="end">IREE speedup</text>
 
 <text x="18" y="218" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="15">Medium</text>
 <text x="18" y="238" fill="#7F8796" font-family="system-ui, sans-serif" font-size="12">1808 bytes input, 920 / 1680 output ids</text>
-<rect x="320" y="194" width="15.4" height="16" rx="4" fill="#5A9BF6" />
-<text x="345.40372670807454" y="207" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">93.0 μs</text>
-<rect x="320" y="220" width="42.4" height="16" rx="4" fill="#FF914D" />
-<text x="372.4016563146998" y="233" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">256.0 μs</text>
-<text x="1240" y="218" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="13" text-anchor="end">2.75x</text>
-<text x="1160" y="236" fill="#7F8796" font-family="system-ui, sans-serif" font-size="11" text-anchor="end">IREE speedup</text>
+<rect x="320" y="194" width="19.02" height="16" rx="4" fill="#5A9BF6" />
+<text x="349.02337460302067" y="207" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">114.3 μs</text>
+<rect x="320" y="220" width="47.17" height="16" rx="4" fill="#FF914D" />
+<text x="377.1693126357444" y="233" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">283.5 μs</text>
+<text x="1320" y="218" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="13" text-anchor="end">2.48x</text>
+<text x="1240" y="236" fill="#7F8796" font-family="system-ui, sans-serif" font-size="11" text-anchor="end">IREE speedup</text>
 
 <text x="18" y="296" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="15">Long</text>
 <text x="18" y="316" fill="#7F8796" font-family="system-ui, sans-serif" font-size="12">32000 bytes input, 16016 / 30720 output ids</text>
-<rect x="320" y="272" width="203.4" height="16" rx="4" fill="#5A9BF6" />
-<text x="533.3954451345755" y="285" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">1.23 ms</text>
-<rect x="320" y="298" width="720.0" height="16" rx="4" fill="#FF914D" />
-<text x="1030.0" y="311" text-anchor="end" fill="#F7FAFF" font-family="system-ui, sans-serif" font-size="12">4.35 ms</text>
-<text x="1240" y="296" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="13" text-anchor="end">3.54x</text>
-<text x="1160" y="314" fill="#7F8796" font-family="system-ui, sans-serif" font-size="11" text-anchor="end">IREE speedup</text>
+<rect x="320" y="272" width="264.37" height="16" rx="4" fill="#5A9BF6" />
+<text x="594.3688217906583" y="285" text-anchor="start" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">1.59 ms</text>
+<rect x="320" y="298" width="760.0" height="16" rx="4" fill="#FF914D" />
+<text x="1070.0" y="311" text-anchor="end" fill="#F7FAFF" font-family="system-ui, sans-serif" font-size="12">4.57 ms</text>
+<text x="1320" y="296" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="13" text-anchor="end">2.87x</text>
+<text x="1240" y="314" fill="#7F8796" font-family="system-ui, sans-serif" font-size="11" text-anchor="end">IREE speedup</text>
 
 </svg>

@@ -21,10 +21,12 @@ defmodule IREE.Tokenizers.EncodeStream do
 
   - `:add_special_tokens` - whether post-processing special tokens should be
     emitted during finalization, defaults to `true`
+  - `:max_chunk_bytes` - maximum chunk size expected by `feed/2`, defaults to
+    `65536`
   """
   @spec new(IREE.Tokenizers.Tokenizer.t(), keyword()) :: {:ok, t()} | {:error, {atom(), binary()}}
   def new(tokenizer, opts \\ []) do
-    opts = Keyword.validate!(opts, add_special_tokens: true)
+    opts = Keyword.validate!(opts, add_special_tokens: true, max_chunk_bytes: 65_536)
     IREE.Tokenizers.Native.encode_stream_new(tokenizer, opts)
   end
 

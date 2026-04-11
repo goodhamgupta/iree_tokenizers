@@ -309,6 +309,10 @@ unsafe extern "C" {
         out_token_count: *mut usize,
     ) -> iree_status_t;
 
+    pub fn iree_tokenizer_encode_state_has_pending(
+        state: *const iree_tokenizer_encode_state_t,
+    ) -> bool;
+
     pub fn iree_tokenizer_decode_state_initialize(
         tokenizer: *const iree_tokenizer_t,
         flags: iree_tokenizer_decode_flags_t,

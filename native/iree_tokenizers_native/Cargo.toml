@@ -17,3 +17,7 @@ thiserror = "2"
 
 [build-dependencies]
 cc = "1"
+
+[dev-dependencies]
+sentencepiece = { version = "0.13.1", features = ["static"] }
+ureq = { version = "2", features = ["tls"] }

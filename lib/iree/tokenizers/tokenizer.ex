@@ -359,9 +359,7 @@ defmodule IREE.Tokenizers.Tokenizer do
   def decode(%__MODULE__{} = tokenizer, ids, opts) when is_list(ids) do
     opts = Keyword.validate!(opts, skip_special_tokens: true)
 
-    with {:ok, text} <- IREE.Tokenizers.Native.tokenizer_decode(tokenizer, ids, opts) do
-      {:ok, maybe_fix_sentencepiece_bpe_decode(tokenizer, text)}
-    end
+    IREE.Tokenizers.Native.tokenizer_decode(tokenizer, ids, opts)
   end
 
   def decode(%__MODULE__{}, _ids, _opts),
@@ -380,7 +378,7 @@ defmodule IREE.Tokenizers.Tokenizer do
       nil ->
         with {:ok, texts} <-
                IREE.Tokenizers.Native.tokenizer_decode_batch(tokenizer, batch_ids, opts) do
-          {:ok, Enum.map(texts, &maybe_fix_sentencepiece_bpe_decode(tokenizer, &1))}
+          {:ok, texts}
         end
 
       _ ->
@@ -506,16 +504,6 @@ defmodule IREE.Tokenizers.Tokenizer do
 
   defp maybe_put_auth(headers, nil), do: headers
   defp maybe_put_auth(headers, token), do: [{"authorization", "Bearer #{token}"} | headers]
-
-  defp maybe_fix_sentencepiece_bpe_decode(%__MODULE__{} = tokenizer, text) do
-    components = ComponentRegistry.get(tokenizer.resource)
-
-    if components[:source_format] == :sentencepiece_model and model_type(tokenizer) == "BPE" do
-      String.replace_prefix(text, " ", "")
-    else
-      text
-    end
-  end
 
   defp register_components(tokenizer, components) do
     ComponentRegistry.put(tokenizer.resource, components)

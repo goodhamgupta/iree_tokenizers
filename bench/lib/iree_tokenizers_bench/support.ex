@@ -1,9 +1,13 @@
 defmodule IREETokenizersBench.Support do
   alias IREE.Tokenizers.EncodeStream
   alias IREE.Tokenizers.Tokenizer, as: IREETokenizer
+  alias Tokenizers.Encoding, as: HFEncoding
   alias Tokenizers.Tokenizer, as: ElixirTokenizers
 
   @default_chunk_bytes 16_384
+  @default_samples 9
+  @min_sample_time_us 25_000
+  @min_sample_runs 5
 
   def benchmark_corpus(byte_target \\ 512_000) do
     paragraph =
@@ -13,11 +17,11 @@ defmodule IREETokenizersBench.Support do
     |> IO.iodata_to_binary()
   end
 
-  def time_ms(fun, repeats \\ 5) do
-    _ = timed_call(fun)
+  def time_ms(fun, repeats \\ @default_samples) do
+    _ = sample_ms(fun)
 
     1..repeats
-    |> Enum.map(fn _ -> timed_call(fun) end)
+    |> Enum.map(fn _ -> sample_ms(fun) end)
     |> Enum.sort()
     |> median()
   end
@@ -35,6 +39,59 @@ defmodule IREETokenizersBench.Support do
       {:ok, _final_ids} = EncodeStream.finalize(stream)
       :ok
     end)
+  end
+
+  def stream_encode_ids(tokenizer, corpus, chunk_bytes \\ @default_chunk_bytes) do
+    with {:ok, stream} <- EncodeStream.new(tokenizer, add_special_tokens: false) do
+      prefix =
+        corpus
+        |> chunk_binary(chunk_bytes)
+        |> Enum.flat_map(fn chunk ->
+          {:ok, ids} = EncodeStream.feed(stream, chunk)
+          ids
+        end)
+
+      with {:ok, suffix} <- EncodeStream.finalize(stream) do
+        {:ok, prefix ++ suffix}
+      end
+    end
+  end
+
+  def encode_comparison(iree_tokenizer, tokenizers_tokenizer, text, opts \\ []) do
+    encode_opts = Keyword.validate!(opts, add_special_tokens: false, track_offsets: false)
+
+    with {:ok, iree_encoding} <- IREETokenizer.encode(iree_tokenizer, text, encode_opts),
+         {:ok, tokenizers_encoding} <-
+           ElixirTokenizers.encode(tokenizers_tokenizer, text,
+             add_special_tokens: Keyword.fetch!(encode_opts, :add_special_tokens)
+           ),
+         {:ok, iree_decoded} <-
+           IREETokenizer.decode(iree_tokenizer, iree_encoding.ids, skip_special_tokens: false),
+         {:ok, tokenizers_decoded} <-
+           ElixirTokenizers.decode(tokenizers_tokenizer, HFEncoding.get_ids(tokenizers_encoding),
+             skip_special_tokens: false
+           ) do
+      tokenizers_ids = HFEncoding.get_ids(tokenizers_encoding)
+
+      {:ok,
+       %{
+         text: text,
+         iree_encoding: iree_encoding,
+         tokenizers_encoding: tokenizers_encoding,
+         iree_ids: iree_encoding.ids,
+         tokenizers_ids: tokenizers_ids,
+         ids_equal: iree_encoding.ids == tokenizers_ids,
+         iree_decoded: iree_decoded,
+         tokenizers_decoded: tokenizers_decoded,
+         decoded_equal: iree_decoded == tokenizers_decoded,
+         iree_roundtrip?: iree_decoded == text,
+         tokenizers_roundtrip?: tokenizers_decoded == text
+       }}
+    end
+  end
+
+  def equivalent_outputs?(comparison) do
+    comparison.ids_equal and comparison.decoded_equal
   end
 
   def benchmark_throughput(label, tokens_per_run, fun, warmup_seconds, measure_seconds) do
@@ -136,8 +193,11 @@ defmodule IREETokenizersBench.Support do
 
     max_value =
       rows
-      |> Enum.flat_map(fn row -> [row.hf_ms, row.iree_oneshot_ms, row.iree_stream_ms] end)
-      |> Enum.max()
+      |> Enum.flat_map(fn row ->
+        [row.hf_ms, row.iree_oneshot_ms] ++
+          if(is_number(row.iree_stream_ms), do: [row.iree_stream_ms], else: [])
+      end)
+      |> Enum.max(fn -> 1.0 end)
 
     bars =
       rows
@@ -145,29 +205,37 @@ defmodule IREETokenizersBench.Support do
       |> Enum.map(fn {row, index} ->
         y = header_height + index * row_height
 
-        [
-          metric_bar(chart_left, chart_width, y, "HF", row.hf_ms, max_value, "#5D6472", 0),
-          metric_bar(
-            chart_left,
-            chart_width,
-            y,
-            "IREE oneshot",
-            row.iree_oneshot_ms,
-            max_value,
-            "#5A9BF6",
-            18
-          ),
-          metric_bar(
-            chart_left,
-            chart_width,
-            y,
-            "IREE stream",
-            row.iree_stream_ms,
-            max_value,
-            "#35C296",
-            36
-          )
-        ]
+        ([
+           metric_bar(chart_left, chart_width, y, "HF", row.hf_ms, max_value, "#5D6472", 0),
+           metric_bar(
+             chart_left,
+             chart_width,
+             y,
+             "IREE oneshot",
+             row.iree_oneshot_ms,
+             max_value,
+             "#5A9BF6",
+             18
+           )
+         ] ++
+           if is_number(row.iree_stream_ms) do
+             [
+               metric_bar(
+                 chart_left,
+                 chart_width,
+                 y,
+                 "IREE stream",
+                 row.iree_stream_ms,
+                 max_value,
+                 "#35C296",
+                 36
+               )
+             ]
+           else
+             [
+               "<text x=\"#{chart_left + 10}\" y=\"#{y + 47}\" fill=\"#A7B0C3\" font-family=\"system-ui, sans-serif\" font-size=\"12\">IREE stream: n/a</text>"
+             ]
+           end)
         |> Enum.join("\n")
         |> then(
           &{"<text x=\"18\" y=\"#{y + 25}\" fill=\"#D9E1F2\" font-family=\"system-ui, sans-serif\" font-size=\"14\">#{row.label}</text>\n" <>
@@ -198,8 +266,11 @@ defmodule IREETokenizersBench.Support do
 
     max_value =
       rows
-      |> Enum.flat_map(fn row -> [row.iree_oneshot_speedup, row.iree_stream_speedup] end)
-      |> Enum.max()
+      |> Enum.flat_map(fn row ->
+        [row.iree_oneshot_speedup] ++
+          if(is_number(row.iree_stream_speedup), do: [row.iree_stream_speedup], else: [])
+      end)
+      |> Enum.max(fn -> 1.0 end)
 
     bars =
       rows
@@ -207,14 +278,23 @@ defmodule IREETokenizersBench.Support do
       |> Enum.map(fn {row, index} ->
         y = header_height + index * row_height
         oneshot_width = chart_width * (row.iree_oneshot_speedup / max_value)
-        stream_width = chart_width * (row.iree_stream_speedup / max_value)
 
         """
         <text x="18" y="#{y + 22}" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="14">#{row.label}</text>
         <rect x="#{chart_left}" y="#{y}" width="#{Float.round(oneshot_width, 2)}" height="16" rx="4" fill="#5A9BF6" />
         <text x="#{chart_left + oneshot_width + 10}" y="#{y + 13}" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">#{Float.round(row.iree_oneshot_speedup, 1)}x oneshot</text>
-        <rect x="#{chart_left}" y="#{y + 22}" width="#{Float.round(stream_width, 2)}" height="16" rx="4" fill="#35C296" />
-        <text x="#{chart_left + stream_width + 10}" y="#{y + 35}" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">#{Float.round(row.iree_stream_speedup, 1)}x stream</text>
+        #{if is_number(row.iree_stream_speedup) do
+          stream_width = chart_width * (row.iree_stream_speedup / max_value)
+
+          """
+          <rect x="#{chart_left}" y="#{y + 22}" width="#{Float.round(stream_width, 2)}" height="16" rx="4" fill="#35C296" />
+          <text x="#{chart_left + stream_width + 10}" y="#{y + 35}" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">#{Float.round(row.iree_stream_speedup, 1)}x stream</text>
+          """
+        else
+          """
+          <text x="#{chart_left + 10}" y="#{y + 35}" fill="#A7B0C3" font-family="system-ui, sans-serif" font-size="12">stream n/a</text>
+          """
+        end}
         """
       end)
       |> Enum.join("\n")
@@ -410,10 +490,21 @@ defmodule IREETokenizersBench.Support do
     end
   end
 
-  defp timed_call(fun) do
+  defp sample_ms(fun) do
+    {elapsed_us, runs} = run_sample(fun, 0, 0)
+    elapsed_us / runs / 1_000
+  end
+
+  defp run_sample(_fun, elapsed_us, runs)
+       when elapsed_us >= @min_sample_time_us and runs >= @min_sample_runs do
+    {elapsed_us, runs}
+  end
+
+  defp run_sample(fun, elapsed_us, runs) do
     started_at = System.monotonic_time(:microsecond)
     _ = fun.()
-    (System.monotonic_time(:microsecond) - started_at) / 1_000
+    sample_elapsed_us = System.monotonic_time(:microsecond) - started_at
+    run_sample(fun, elapsed_us + sample_elapsed_us, runs + 1)
   end
 
   defp median(values) do
