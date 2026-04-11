@@ -103,21 +103,22 @@ If you need authentication for gated/private repos:
 
 The benchmark harness compares this package against the published [`tokenizers`](https://hex.pm/packages/tokenizers) package.
 
-On a recent local GPT-2 batch-of-100 encode run, this package measured `9.4M tokens/sec`. The IREE tokenizer author reports `10.1M tokens/sec` in the upstream post. That difference is small enough to be unsurprising and does not indicate a correctness problem by itself:
+All checked-in numbers come from the scripts under `bench/`. The README reports
+only benchmark outputs that are directly reproducible from those scripts.
 
-- the local harness measures through Elixir/NIF integration rather than a pure
-  native benchmark
-- the host machine, toolchain, OTP version, and scheduler behavior differ
-- the comparison target in this repo is `elixir-nx/tokenizers`, not the exact
-  native setup used in the upstream post
+The benchmark scripts validate cross-library output parity before they report
+speedups:
 
-The important result is that the implementation remains in the same performance
-class and preserves the expected large speedup over the Elixir `tokenizers`
-package.
+- encode/decode fixture comparisons benchmark decode only when both libraries
+  produced the same token sequence for the shared input
+- SentencePiece `.model` comparisons validate multiple representative inputs per
+  model and skip models whose `.model` path does not match `tokenizer.json`
+- the model matrix excludes embedding models and reports stream numbers only
+  when streamed output matches IREE one-shot output on the benchmark corpus
 
 #### Local fixture comparison against `elixir-nx/tokenizers`
 
-The local fixture comparison script now writes:
+The local fixture comparison script writes:
 - [`bench/results/tokenizers_compare.md`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare.md?raw=1)
 - [`bench/results/tokenizers_compare_encode.svg`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare_encode.svg?raw=1)
 - [`bench/results/tokenizers_compare_decode.svg`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare_decode.svg?raw=1)
@@ -139,17 +140,8 @@ Fixture decode latency chart:
 
 The SentencePiece-specific comparison script checks direct `.model` loading against the official
 [`tokenizers`](https://hex.pm/packages/tokenizers) package loaded from the corresponding
-`tokenizer.json`.
-
-Current checked-in results from
-[`bench/results/sentencepiece_compare.md`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/sentencepiece_compare.md?raw=1):
-
-| Model | Repo | Input bytes | Output ids | IREE `.model` | `tokenizers` | Speedup |
-| --- | --- | ---: | ---: | ---: | ---: | ---: |
-| `T5-small (SentencePiece Unigram)` encode | `google-t5/t5-small` | `52` | `10` | `12.0 μs` | `35.0 μs` | `2.92x` |
-| `LLaMA tokenizer (SentencePiece BPE)` encode | `hf-internal-testing/llama-tokenizer` | `44` | `12` | `15.0 μs` | `16.0 μs` | `1.07x` |
-| `T5-small (SentencePiece Unigram)` decode | `google-t5/t5-small` | `52` | `10` | `4.0 μs` | `3.0 μs` | `0.75x` |
-| `LLaMA tokenizer (SentencePiece BPE)` decode | `hf-internal-testing/llama-tokenizer` | `44` | `12` | `9.0 μs` | `12.0 μs` | `1.33x` |
+`tokenizer.json`, using several representative inputs per model before it records
+latency numbers.
 
 SentencePiece encode latency chart:
 
@@ -161,29 +153,21 @@ SentencePiece decode latency chart:
 
 #### Model latency comparison
 
-The current checked-in local snapshot from
-[`bench/results/model_matrix.md`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/model_matrix.md?raw=1)
-contains:
-
-| Model | Repo used | Tokenizers package (ms) | IREE oneshot / stream (ms) | Speedup |
-| --- | --- | ---: | ---: | --- |
-| `LiquidAI/LFM2.5-1.2B-Instruct` | `LiquidAI/LFM2.5-1.2B-Instruct` | `61.4 ms` | `15.8 ms / 5.03 ms` | `3.9x / 12.2x` |
-| `Qwen/Qwen3.5-9B` | `Qwen/Qwen3.5-9B` | `69.5 ms` | `10.9 ms / 10.7 ms` | `6.4x / 6.5x` |
-| `zai-org/GLM-5.1` | `zai-org/GLM-5.1` | `59.2 ms` | `10.7 ms / 5.51 ms` | `5.5x / 10.7x` |
-| `mistralai/Ministral-3-3B-Reasoning-2512` | `mistralai/Ministral-3-3B-Reasoning-2512` | `79.0 ms` | `10.8 ms / 5.89 ms` | `7.3x / 13.4x` |
-| `BAAI/bge-m3` | `BAAI/bge-m3` | `46.7 ms` | `23.1 ms / 14.3 ms` | `2.0x / 3.3x` |
-| `google/gemma-4-31B-it` | `google/gemma-4-31B-it` | `20.4 ms` | `10.3 ms / 3.78 ms` | `2.0x / 5.4x` |
-
-
-The benchmark harness intentionally keeps only one representative repo per tokenizer family when multiple model variants share the same tokenizer. The current family-level matrix targets:
+The benchmark harness keeps one representative repo per tokenizer family when
+multiple model variants share the same tokenizer. The current family-level
+matrix targets:
 
 - `LiquidAI/LFM2.5-1.2B-Instruct`
 - `Qwen/Qwen3.5-9B`
 - `zai-org/GLM-5.1` with fallback to `zai-org/GLM-5`
 - `mistralai/Ministral-3-3B-Reasoning-2512`
-- `BAAI/bge-m3`
 - `arcee-ai/Trinity-Large-Preview`
 - `google/gemma-4-31B-it`
+
+Embedding models are excluded from the published latency matrix. Rows are also
+skipped when the benchmark corpus does not produce equivalent outputs across the
+two libraries, and stream measurements are only published when streaming output
+matches IREE one-shot output on that corpus.
 
 Latency chart:
 

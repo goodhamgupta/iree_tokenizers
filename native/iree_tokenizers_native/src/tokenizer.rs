@@ -1,6 +1,7 @@
 use std::{slice, sync::Mutex};
 
 use rustler::{NifStruct, NifTaggedEnum, ResourceArc};
+use serde_json::Value;
 
 use crate::{
     error::{check_status, is_resource_exhausted, ErrorKind, Result, TokenizerError},
@@ -21,6 +22,7 @@ const SUPPORTED_TIKTOKEN_ENCODINGS: [&str; 7] = [
 pub struct TokenizerResource {
     pub(crate) ptr: *mut ffi::iree_tokenizer_t,
     pub(crate) model_type: String,
+    pub(crate) decode_strategy: DecodeStrategy,
 }
 
 unsafe impl Send for TokenizerResource {}
@@ -54,10 +56,17 @@ pub struct Encoding {
     pub tokens: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DecodeStrategy {
+    Native,
+    SentencePieceBpe,
+}
+
 #[derive(NifTaggedEnum)]
 pub enum EncodeOption {
     AddSpecialTokens(bool),
     TrackOffsets(bool),
+    MaxChunkBytes(usize),
 }
 
 #[derive(NifTaggedEnum)]
@@ -67,6 +76,7 @@ pub enum DecodeOption {
 
 #[rustler::nif(schedule = "DirtyCpu")]
 pub fn tokenizer_from_buffer(buffer: rustler::Binary) -> Result<Tokenizer> {
+    let metadata = tokenizer_metadata_from_hf_json(buffer.as_slice());
     let mut raw = std::ptr::null_mut();
     let status = unsafe {
         ffi::iree_tokenizer_from_huggingface_json(
@@ -77,7 +87,7 @@ pub fn tokenizer_from_buffer(buffer: rustler::Binary) -> Result<Tokenizer> {
     };
     check_status(status)?;
 
-    tokenizer_from_raw(raw)
+    tokenizer_from_raw(raw, metadata)
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -97,12 +107,13 @@ pub fn tokenizer_from_tiktoken_buffer(
     };
     check_status(status)?;
 
-    tokenizer_from_raw(raw)
+    tokenizer_from_raw(raw, TokenizerMetadata::default())
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
 pub fn tokenizer_from_sentencepiece_model(buffer: rustler::Binary) -> Result<Tokenizer> {
     let json = sentencepiece::model_to_tokenizer_json(buffer.as_slice())?;
+    let metadata = tokenizer_metadata_from_hf_json(json.as_slice());
     let mut raw = std::ptr::null_mut();
     let status = unsafe {
         ffi::iree_tokenizer_from_huggingface_json(
@@ -113,7 +124,7 @@ pub fn tokenizer_from_sentencepiece_model(buffer: rustler::Binary) -> Result<Tok
     };
     check_status(status)?;
 
-    tokenizer_from_raw(raw)
+    tokenizer_from_raw(raw, metadata)
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -251,7 +262,14 @@ pub fn tokenizer_decode(
     opts: Vec<DecodeOption>,
 ) -> Result<String> {
     let options = parse_decode_options(opts);
-    decode_impl(&tokenizer.resource, &ids, options.skip_special_tokens)
+    match tokenizer.resource.decode_strategy {
+        DecodeStrategy::Native => {
+            decode_impl(&tokenizer.resource, &ids, options.skip_special_tokens)
+        }
+        DecodeStrategy::SentencePieceBpe => {
+            decode_sentencepiece_bpe(&tokenizer.resource, &ids, options.skip_special_tokens)
+        }
+    }
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -264,6 +282,13 @@ pub fn tokenizer_decode_batch(
 
     if batch_ids.is_empty() {
         return Ok(Vec::new());
+    }
+
+    if tokenizer.resource.decode_strategy == DecodeStrategy::SentencePieceBpe {
+        return batch_ids
+            .iter()
+            .map(|ids| decode_sentencepiece_bpe(&tokenizer.resource, ids, options.skip_special_tokens))
+            .collect();
     }
 
     let mut state_size = 0usize;
@@ -413,7 +438,11 @@ pub fn encode_stream_new(
     opts: Vec<EncodeOption>,
 ) -> Result<crate::stream::EncodeStream> {
     let options = parse_encode_options(opts);
-    let state = EncodeStreamState::new(tokenizer.resource.clone(), options.add_special_tokens)?;
+    let state = EncodeStreamState::new(
+        tokenizer.resource.clone(),
+        options.add_special_tokens,
+        options.max_chunk_bytes,
+    )?;
     Ok(crate::stream::EncodeStream {
         resource: ResourceArc::new(EncodeStreamResource {
             _tokenizer: tokenizer.resource,
@@ -553,12 +582,14 @@ fn parse_encode_options(opts: Vec<EncodeOption>) -> ParsedEncodeOptions {
     let mut parsed = ParsedEncodeOptions {
         add_special_tokens: true,
         track_offsets: false,
+        max_chunk_bytes: 65_536,
     };
 
     for opt in opts {
         match opt {
             EncodeOption::AddSpecialTokens(value) => parsed.add_special_tokens = value,
             EncodeOption::TrackOffsets(value) => parsed.track_offsets = value,
+            EncodeOption::MaxChunkBytes(value) => parsed.max_chunk_bytes = value,
         }
     }
 
@@ -622,6 +653,7 @@ fn special_id(
 struct ParsedEncodeOptions {
     add_special_tokens: bool,
     track_offsets: bool,
+    max_chunk_bytes: usize,
 }
 
 struct ParsedDecodeOptions {
@@ -649,7 +681,18 @@ fn encoding_metadata(tokenizer: &TokenizerResource, ids: &[i32]) -> (Vec<u8>, Ve
     (special_tokens_mask, tokens)
 }
 
-fn tokenizer_from_raw(raw: *mut ffi::iree_tokenizer_t) -> Result<Tokenizer> {
+#[derive(Clone, Copy, Default)]
+pub(crate) struct TokenizerMetadata {
+    pub(crate) decode_strategy: DecodeStrategy,
+}
+
+impl Default for DecodeStrategy {
+    fn default() -> Self {
+        Self::Native
+    }
+}
+
+fn tokenizer_from_raw(raw: *mut ffi::iree_tokenizer_t, metadata: TokenizerMetadata) -> Result<Tokenizer> {
     let model_type = string_view_to_string(unsafe { ffi::iree_tokenizer_model_type_name(raw) })
         .map_err(|err| {
             TokenizerError::new(
@@ -662,6 +705,7 @@ fn tokenizer_from_raw(raw: *mut ffi::iree_tokenizer_t) -> Result<Tokenizer> {
         resource: ResourceArc::new(TokenizerResource {
             ptr: raw,
             model_type,
+            decode_strategy: metadata.decode_strategy,
         }),
     })
 }
@@ -679,4 +723,146 @@ fn tiktoken_config_by_name(encoding: &str) -> Result<*const ffi::iree_tokenizer_
     } else {
         Ok(config)
     }
+}
+
+pub(crate) fn tokenizer_metadata_from_hf_json(json: &[u8]) -> TokenizerMetadata {
+    let Ok(root) = serde_json::from_slice::<Value>(json) else {
+        return TokenizerMetadata::default();
+    };
+
+    let decode_strategy = if is_sentencepiece_bpe_decoder(&root) {
+        DecodeStrategy::SentencePieceBpe
+    } else {
+        DecodeStrategy::Native
+    };
+
+    TokenizerMetadata { decode_strategy }
+}
+
+fn is_sentencepiece_bpe_decoder(root: &Value) -> bool {
+    let model_type = root
+        .get("model")
+        .and_then(|model| model.get("type"))
+        .and_then(Value::as_str);
+
+    if model_type != Some("BPE") {
+        return false;
+    }
+
+    let Some(decoder) = root.get("decoder") else {
+        return false;
+    };
+
+    let Some(decoders) = decoder
+        .as_object()
+        .filter(|object| object.get("type").and_then(Value::as_str) == Some("Sequence"))
+        .and_then(|object| object.get("decoders"))
+        .and_then(Value::as_array)
+    else {
+        return false;
+    };
+
+    let has_replace = decoders.iter().any(is_sentencepiece_replace_decoder);
+    let has_fuse = decoders
+        .iter()
+        .any(|decoder| decoder_type(decoder) == Some("Fuse"));
+    let has_strip = decoders.iter().any(is_sentencepiece_strip_decoder);
+
+    has_replace && has_fuse && has_strip
+}
+
+fn decoder_type(value: &Value) -> Option<&str> {
+    value.as_object()?.get("type")?.as_str()
+}
+
+fn is_sentencepiece_replace_decoder(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+
+    if object.get("type").and_then(Value::as_str) != Some("Replace") {
+        return false;
+    }
+
+    object
+        .get("pattern")
+        .and_then(Value::as_object)
+        .and_then(|pattern| pattern.get("String"))
+        .and_then(Value::as_str)
+        == Some("▁")
+        && object.get("content").and_then(Value::as_str) == Some(" ")
+}
+
+fn is_sentencepiece_strip_decoder(value: &Value) -> bool {
+    let Some(object) = value.as_object() else {
+        return false;
+    };
+
+    object.get("type").and_then(Value::as_str) == Some("Strip")
+        && object.get("content").and_then(Value::as_str) == Some(" ")
+        && object.get("start").and_then(Value::as_i64) == Some(1)
+        && object.get("stop").and_then(Value::as_i64) == Some(0)
+}
+
+pub(crate) fn decode_sentencepiece_bpe(
+    tokenizer: &TokenizerResource,
+    ids: &[i32],
+    skip_special_tokens: bool,
+) -> Result<String> {
+    let vocab = unsafe { ffi::iree_tokenizer_vocab(tokenizer.ptr) };
+    let mut output = String::new();
+    let mut pending_bytes = Vec::new();
+
+    for &id in ids {
+        if id < 0 {
+            continue;
+        }
+
+        let attrs = unsafe { ffi::iree_tokenizer_vocab_token_attrs(vocab, id) };
+        let is_special = (attrs & ffi::IREE_TOKENIZER_TOKEN_ATTR_SPECIAL) != 0;
+        if skip_special_tokens && is_special {
+            continue;
+        }
+
+        let token = string_view_to_string(unsafe { ffi::iree_tokenizer_vocab_token_text(vocab, id) })
+            .map_err(|err| {
+                TokenizerError::new(
+                    ErrorKind::Internal,
+                    format!("invalid UTF-8 in tokenizer metadata: {err}"),
+                )
+            })?;
+
+        if let Some(byte) = parse_byte_fallback_token(&token) {
+            pending_bytes.push(byte);
+            continue;
+        }
+
+        flush_pending_bytes(&mut output, &mut pending_bytes);
+        output.push_str(&token.replace('▁', " "));
+    }
+
+    flush_pending_bytes(&mut output, &mut pending_bytes);
+
+    if output.starts_with(' ') {
+        output.remove(0);
+    }
+
+    Ok(output)
+}
+
+fn parse_byte_fallback_token(token: &str) -> Option<u8> {
+    if token.len() != 6 || !token.starts_with("<0x") || !token.ends_with('>') {
+        return None;
+    }
+
+    u8::from_str_radix(&token[3..5], 16).ok()
+}
+
+fn flush_pending_bytes(output: &mut String, pending_bytes: &mut Vec<u8>) {
+    if pending_bytes.is_empty() {
+        return;
+    }
+
+    output.push_str(&String::from_utf8_lossy(pending_bytes));
+    pending_bytes.clear();
 }

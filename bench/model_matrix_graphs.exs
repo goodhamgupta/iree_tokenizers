@@ -31,7 +31,8 @@ defmodule IREETokenizersBench.ModelMatrix do
     %{
       label: "BAAI/bge-m3",
       requested_repo: "BAAI/bge-m3",
-      repos: ["BAAI/bge-m3"]
+      repos: ["BAAI/bge-m3"],
+      skip_reason: "embedding model excluded from the latency matrix"
     },
     %{
       label: "arcee-ai/Trinity-Large-Preview",
@@ -58,21 +59,30 @@ defmodule IREETokenizersBench.ModelMatrix do
       Enum.reduce(models, {[], []}, fn model, {rows, skipped} ->
         IO.puts("Benchmarking #{model.label}...")
 
-        case load_model(model) do
-          {:ok, actual_repo, iree_tokenizer, tokenizers_tokenizer} ->
-            row =
-              benchmark_model(
-                model.label,
-                actual_repo,
-                iree_tokenizer,
-                tokenizers_tokenizer,
-                corpus
-              )
+        cond do
+          model[:skip_reason] ->
+            {rows, [%{label: model.label, reason: model[:skip_reason]} | skipped]}
 
-            {[row | rows], skipped}
+          true ->
+            case load_model(model) do
+              {:ok, actual_repo, iree_tokenizer, tokenizers_tokenizer} ->
+                case benchmark_model(
+                       model.label,
+                       actual_repo,
+                       iree_tokenizer,
+                       tokenizers_tokenizer,
+                       corpus
+                     ) do
+                  {:ok, row} ->
+                    {[row | rows], skipped}
 
-          {:error, reason} ->
-            {rows, [%{label: model.label, reason: reason} | skipped]}
+                  {:skip, reason} ->
+                    {rows, [%{label: model.label, reason: reason} | skipped]}
+                end
+
+              {:error, reason} ->
+                {rows, [%{label: model.label, reason: reason} | skipped]}
+            end
         end
       end)
 
@@ -112,27 +122,48 @@ defmodule IREETokenizersBench.ModelMatrix do
   end
 
   defp benchmark_model(label, actual_repo, iree_tokenizer, tokenizers_tokenizer, corpus) do
-    tokenizers_ms =
-      Support.time_ms(fn ->
-        ElixirTokenizers.encode(tokenizers_tokenizer, corpus, add_special_tokens: false)
-      end)
+    {:ok, comparison} =
+      Support.encode_comparison(iree_tokenizer, tokenizers_tokenizer, corpus,
+        add_special_tokens: false
+      )
 
-    iree_oneshot_ms =
-      Support.time_ms(fn ->
-        IREETokenizer.encode(iree_tokenizer, corpus, add_special_tokens: false)
-      end)
+    if not Support.equivalent_outputs?(comparison) do
+      {:skip,
+       "encode outputs diverged on benchmark corpus (ids_equal=#{comparison.ids_equal}, decoded_equal=#{comparison.decoded_equal})"}
+    else
+      tokenizers_ms =
+        Support.time_ms(fn ->
+          ElixirTokenizers.encode(tokenizers_tokenizer, corpus, add_special_tokens: false)
+        end)
 
-    iree_stream_ms = Support.iree_stream_encode_ms(iree_tokenizer, corpus, @chunk_bytes)
+      iree_oneshot_ms =
+        Support.time_ms(fn ->
+          IREETokenizer.encode(iree_tokenizer, corpus, add_special_tokens: false)
+        end)
 
-    %{
-      label: label,
-      actual_repo: actual_repo,
-      hf_ms: tokenizers_ms,
-      iree_oneshot_ms: iree_oneshot_ms,
-      iree_stream_ms: iree_stream_ms,
-      iree_oneshot_speedup: tokenizers_ms / iree_oneshot_ms,
-      iree_stream_speedup: tokenizers_ms / iree_stream_ms
-    }
+      {iree_stream_ms, iree_stream_speedup, stream_note} =
+        case Support.stream_encode_ids(iree_tokenizer, corpus, @chunk_bytes) do
+          {:ok, stream_ids} when stream_ids == comparison.iree_ids ->
+            stream_ms = Support.iree_stream_encode_ms(iree_tokenizer, corpus, @chunk_bytes)
+            {stream_ms, tokenizers_ms / stream_ms, nil}
+
+          {:ok, stream_ids} ->
+            {nil, nil,
+             "stream output diverged from IREE one-shot encode (#{length(stream_ids)} ids vs #{length(comparison.iree_ids)})"}
+        end
+
+      {:ok,
+       %{
+         label: label,
+         actual_repo: actual_repo,
+         hf_ms: tokenizers_ms,
+         iree_oneshot_ms: iree_oneshot_ms,
+         iree_stream_ms: iree_stream_ms,
+         iree_oneshot_speedup: tokenizers_ms / iree_oneshot_ms,
+         iree_stream_speedup: iree_stream_speedup,
+         stream_note: stream_note
+       }}
+    end
   end
 
   defp render_summary(rows, skipped) do
@@ -144,11 +175,35 @@ defmodule IREETokenizersBench.ModelMatrix do
     table_rows =
       rows
       |> Enum.map(fn row ->
+        stream_ms = if row.iree_stream_ms, do: Support.format_ms(row.iree_stream_ms), else: "n/a"
+
+        stream_speedup =
+          if row.iree_stream_speedup,
+            do: "#{Float.round(row.iree_stream_speedup, 1)}x",
+            else: "n/a"
+
         "| #{row.label} | #{row.actual_repo} | #{Support.format_ms(row.hf_ms)} | " <>
-          "#{Support.format_ms(row.iree_oneshot_ms)} / #{Support.format_ms(row.iree_stream_ms)} | " <>
-          "#{Float.round(row.iree_oneshot_speedup, 1)}x / #{Float.round(row.iree_stream_speedup, 1)}x |"
+          "#{Support.format_ms(row.iree_oneshot_ms)} / #{stream_ms} | " <>
+          "#{Float.round(row.iree_oneshot_speedup, 1)}x / #{stream_speedup} |"
       end)
       |> Enum.join("\n")
+
+    notes =
+      rows
+      |> Enum.filter(& &1.stream_note)
+      |> Enum.map_join("\n", fn row -> "- #{row.label}: #{row.stream_note}" end)
+
+    notes_section =
+      if notes == "" do
+        ""
+      else
+        """
+
+        ## Notes
+
+        #{notes}
+        """
+      end
 
     skipped_section =
       case skipped do
@@ -169,6 +224,7 @@ defmodule IREETokenizersBench.ModelMatrix do
 
     #{table_header}
     #{table_rows}
+    #{notes_section}
     #{skipped_section}
     """
   end

@@ -2,7 +2,6 @@ Mix.Task.run("app.start")
 
 alias IREE.Tokenizers.Tokenizer, as: IREETokenizer
 alias IREETokenizersBench.Support
-alias Tokenizers.Encoding, as: HFEncoding
 alias Tokenizers.Tokenizer, as: ElixirTokenizers
 
 results_dir = Path.expand("results", __DIR__)
@@ -59,14 +58,11 @@ Benchee.run(
 
 encode_rows =
   Enum.map(texts, fn {label, text} ->
-    {:ok, iree_encoding} =
-      IREETokenizer.encode(iree_tokenizer, text, add_special_tokens: false, track_offsets: true)
-
-    {:ok, tokenizers_encoding} =
-      ElixirTokenizers.encode(tokenizers_tokenizer, text, add_special_tokens: false)
-
-    iree_ids = iree_encoding.ids
-    hf_ids = HFEncoding.get_ids(tokenizers_encoding)
+    {:ok, comparison} =
+      Support.encode_comparison(iree_tokenizer, tokenizers_tokenizer, text,
+        add_special_tokens: false,
+        track_offsets: true
+      )
 
     iree_ms =
       Support.time_ms(fn ->
@@ -81,18 +77,26 @@ encode_rows =
     %{
       label: String.capitalize(label),
       subtitle:
-        "#{byte_size(text)} bytes input, #{length(iree_ids)} / #{length(hf_ids)} output ids",
+        "#{byte_size(text)} bytes input, #{length(comparison.iree_ids)} / #{length(comparison.tokenizers_ids)} output ids",
       bytes: byte_size(text),
       iree_ms: iree_ms,
       tokenizers_ms: tokenizers_ms,
       speedup: tokenizers_ms / iree_ms,
-      iree_ids: iree_ids,
-      tokenizers_ids: hf_ids
+      iree_ids: comparison.iree_ids,
+      tokenizers_ids: comparison.tokenizers_ids,
+      comparable_decode: Support.equivalent_outputs?(comparison),
+      mismatch_reason:
+        if(Support.equivalent_outputs?(comparison),
+          do: nil,
+          else:
+            "encode outputs diverged (ids_equal=#{comparison.ids_equal}, decoded_equal=#{comparison.decoded_equal})"
+        )
     }
   end)
 
 Benchee.run(
   encode_rows
+  |> Enum.filter(& &1.comparable_decode)
   |> Enum.flat_map(fn row ->
     [
       {"iree decode #{String.downcase(row.label)}",
@@ -101,7 +105,7 @@ Benchee.run(
        fn ->
          ElixirTokenizers.decode(
            tokenizers_tokenizer,
-           row.tokenizers_ids,
+           row.iree_ids,
            skip_special_tokens: false
          )
        end}
@@ -117,7 +121,9 @@ Benchee.run(
 )
 
 decode_rows =
-  Enum.map(encode_rows, fn row ->
+  encode_rows
+  |> Enum.filter(& &1.comparable_decode)
+  |> Enum.map(fn row ->
     iree_ms =
       Support.time_ms(fn ->
         IREETokenizer.decode(iree_tokenizer, row.iree_ids, skip_special_tokens: false)
@@ -127,19 +133,21 @@ decode_rows =
       Support.time_ms(fn ->
         ElixirTokenizers.decode(
           tokenizers_tokenizer,
-          row.tokenizers_ids,
+          row.iree_ids,
           skip_special_tokens: false
         )
       end)
 
     %{
       label: row.label,
-      subtitle: "#{length(row.iree_ids)} / #{length(row.tokenizers_ids)} ids decoded",
+      subtitle: "#{length(row.iree_ids)} shared ids decoded",
       iree_ms: iree_ms,
       tokenizers_ms: tokenizers_ms,
       speedup: tokenizers_ms / iree_ms
     }
   end)
+
+skipped_decode_rows = Enum.reject(encode_rows, & &1.comparable_decode)
 
 encode_chart = Path.join(results_dir, "tokenizers_compare_encode.svg")
 decode_chart = Path.join(results_dir, "tokenizers_compare_decode.svg")
@@ -151,7 +159,12 @@ Support.render_dual_series_svg(
   "Local minimal BPE fixture, lower is better",
   encode_rows,
   %{key: :iree_ms, label: "IREE.Tokenizers", color: "#5A9BF6", formatter: &Support.format_ms/1},
-  %{key: :tokenizers_ms, label: "elixir-nx/tokenizers", color: "#FF914D", formatter: &Support.format_ms/1}
+  %{
+    key: :tokenizers_ms,
+    label: "elixir-nx/tokenizers",
+    color: "#FF914D",
+    formatter: &Support.format_ms/1
+  }
 )
 
 Support.render_dual_series_svg(
@@ -160,7 +173,12 @@ Support.render_dual_series_svg(
   "Local minimal BPE fixture, lower is better",
   decode_rows,
   %{key: :iree_ms, label: "IREE.Tokenizers", color: "#5A9BF6", formatter: &Support.format_ms/1},
-  %{key: :tokenizers_ms, label: "elixir-nx/tokenizers", color: "#FF914D", formatter: &Support.format_ms/1}
+  %{
+    key: :tokenizers_ms,
+    label: "elixir-nx/tokenizers",
+    color: "#FF914D",
+    formatter: &Support.format_ms/1
+  }
 )
 
 summary = """
@@ -172,23 +190,29 @@ Local fixture: `test/fixtures/bpe_bytelevel_minimal.json`
 
 | Workload | Input bytes | IREE.Tokenizers | elixir-nx/tokenizers | Speedup |
 | --- | ---: | ---: | ---: | ---: |
-#{Enum.map_join(encode_rows, "\n", fn row ->
-  "| #{row.label} | #{row.bytes} | #{Support.format_ms(row.iree_ms)} | #{Support.format_ms(row.tokenizers_ms)} | #{Float.round(row.speedup, 2)}x |"
-end)}
+#{Enum.map_join(encode_rows, "\n", fn row -> "| #{row.label} | #{row.bytes} | #{Support.format_ms(row.iree_ms)} | #{Support.format_ms(row.tokenizers_ms)} | #{Float.round(row.speedup, 2)}x |" end)}
 
-## Decode latency
+## Decode latency (shared ID sequences only)
 
-| Workload | IREE / tokenizers ids | IREE.Tokenizers | elixir-nx/tokenizers | Speedup |
+| Workload | Shared ids | IREE.Tokenizers | elixir-nx/tokenizers | Speedup |
 | --- | ---: | ---: | ---: | ---: |
-#{Enum.map_join(decode_rows, "\n", fn row ->
-  "| #{row.label} | #{String.replace_suffix(row.subtitle, " ids decoded", "")} | #{Support.format_ms(row.iree_ms)} | #{Support.format_ms(row.tokenizers_ms)} | #{Float.round(row.speedup, 2)}x |"
-end)}
+#{Enum.map_join(decode_rows, "\n", fn row -> "| #{row.label} | #{String.replace_suffix(row.subtitle, " shared ids decoded", "")} | #{Support.format_ms(row.iree_ms)} | #{Support.format_ms(row.tokenizers_ms)} | #{Float.round(row.speedup, 2)}x |" end)}
+
+#{if skipped_decode_rows == [] do
+  ""
+else
+  """
+  ## Skipped decode workloads
+
+  #{Enum.map_join(skipped_decode_rows, "\n", fn row -> "- #{row.label}: #{row.mismatch_reason}" end)}
+  """
+end}
 
 ## Notes
 
 - Encode latency compares the same input text for both libraries.
-- Decode latency compares each library decoding its own encoded ID sequence for the same input text.
-- The minimal local BPE fixture diverges in output token counts on longer inputs, so latency is a more faithful cross-library comparison than tokens/sec for this specific fixture.
+- Decode latency is reported only for workloads where both libraries produced equivalent token sequences for the shared input.
+- Workloads with divergent encode outputs are omitted from the decode comparison instead of being benchmarked as separate workloads.
 """
 
 File.write!(summary_path, summary)
