@@ -1,15 +1,49 @@
 defmodule IREE.Tokenizers.Tokenizer do
   @moduledoc """
   Core tokenizer API.
+
+  This module is the main entrypoint for loading tokenizers and running
+  inference-time encode/decode operations.
+
+  Supported load paths:
+
+  - local or in-memory Hugging Face `tokenizer.json`
+  - local or in-memory OpenAI `.tiktoken`
+  - local or in-memory SentencePiece `.model`
+  - remote Hugging Face repositories via `from_pretrained/2`
+
+  Supported model families:
+
+  - BPE
+  - WordPiece
+  - Unigram
+
+  The API is intentionally inference-focused. It mirrors a useful subset of
+  `elixir-nx/tokenizers` while keeping IREE as the underlying runtime.
   """
 
   alias IREE.Tokenizers.{ComponentRegistry, Encoding, HTTPClient, Model}
 
   defstruct [:resource]
 
+  @typedoc """
+  A loaded tokenizer handle.
+  """
   @type t :: %__MODULE__{resource: reference()}
-  @type load_format :: :huggingface_json | :tiktoken
+  @typedoc """
+  Supported serialized tokenizer formats accepted by the constructor family.
+  """
+  @type load_format :: :huggingface_json | :tiktoken | :sentencepiece_model
+  @typedoc """
+  Input accepted by encode operations.
+
+  The current implementation supports only single binary sequences.
+  """
   @type encode_input :: binary()
+  @typedoc """
+  Common `{:ok, value} | {:error, {kind, message}}` result shape used by the
+  public API.
+  """
   @type result(value) :: {:ok, value} | {:error, {atom(), binary()}}
   @openai_tiktoken_base_url "https://openaipublic.blob.core.windows.net"
   @huggingface_base_url "https://huggingface.co"
@@ -98,6 +132,16 @@ defmodule IREE.Tokenizers.Tokenizer do
     "p50k_edit" => "p50k_base.tiktoken"
   }
 
+  @doc """
+  Loads a tokenizer from an in-memory buffer.
+
+  Supported options:
+
+  - `:format` - one of `:huggingface_json`, `:tiktoken`, or
+    `:sentencepiece_model`
+  - `:tiktoken_encoding` - required for raw `.tiktoken` buffers when the
+    encoding cannot be inferred from a filename or model name
+  """
   @spec from_buffer(binary(), keyword()) :: result(t())
   def from_buffer(buffer, opts \\ [])
 
@@ -117,6 +161,12 @@ defmodule IREE.Tokenizers.Tokenizer do
                  ) do
             {:ok, register_components(tokenizer, %{})}
           end
+
+        :sentencepiece_model ->
+          with {:ok, tokenizer} <-
+                 IREE.Tokenizers.Native.tokenizer_from_sentencepiece_model(buffer) do
+            {:ok, register_components(tokenizer, %{source_format: :sentencepiece_model})}
+          end
       end
     end
   end
@@ -124,6 +174,17 @@ defmodule IREE.Tokenizers.Tokenizer do
   def from_buffer(_buffer, _opts),
     do: {:error, {:invalid_argument, "expected a binary tokenizer buffer"}}
 
+  @doc """
+  Loads a tokenizer from a local file.
+
+  Format can be inferred from the file extension:
+
+  - `.json` -> Hugging Face tokenizer JSON
+  - `.tiktoken` -> OpenAI tiktoken
+  - `.model` -> SentencePiece model
+
+  You can also override the inferred format with `:format`.
+  """
   @spec from_file(Path.t(), keyword()) :: result(t())
   def from_file(path, opts \\ [])
 
@@ -143,76 +204,49 @@ defmodule IREE.Tokenizers.Tokenizer do
 
   def from_file(_path, _opts), do: {:error, {:invalid_argument, "expected a file path"}}
 
+  @doc """
+  Downloads, caches, and loads a tokenizer from a remote repository.
+
+  By default this expects a Hugging Face repository containing
+  `tokenizer.json`. For `.tiktoken` and SentencePiece `.model` loads, pass
+  `:format`.
+
+  Common options:
+
+  - `:revision` - revision or branch name, defaults to `"main"`
+  - `:use_cache` - whether to reuse an existing cached file, defaults to `true`
+  - `:cache_dir` - cache directory, defaults to a per-user application cache
+  - `:http_client` - `{module, opts}` tuple implementing `request/1`
+  - `:token` - optional Hugging Face token for gated/private repos
+  - `:filename` - optional explicit remote filename override
+  - `:format` - serialized tokenizer format
+  - `:tiktoken_encoding` - optional explicit tiktoken encoding override
+  """
   @spec from_pretrained(binary(), keyword()) :: result(t())
   def from_pretrained(repo_id, opts \\ [])
 
   def from_pretrained(repo_id, opts) when is_binary(repo_id) do
     with {:ok, opts} <- validate_pretrained_options(opts, repo_id),
-         {:ok, source} <- pretrained_source(repo_id, opts) do
-      {http_client, http_opts} = opts[:http_client]
-      {:ok, app_version} = :application.get_key(:iree_tokenizers, :vsn)
-      app_version = List.to_string(app_version)
-
-      headers =
-        [{"user-agent", "iree_tokenizers/#{app_version}"}]
-        |> maybe_put_auth(opts[:token])
-
-      http_opts =
-        http_opts
-        |> Keyword.put_new(:base_url, source.base_url)
-        |> Keyword.put(:url, source.url)
-        |> Keyword.put(:method, :get)
-        |> Keyword.update(:headers, headers, fn existing -> existing ++ headers end)
-
-      file_path_fun = fn etag ->
-        Path.join(opts[:cache_dir], entry_filename(source.cache_key, etag))
-      end
-
-      if opts[:use_cache] do
-        case request(http_client, Keyword.put(http_opts, :method, :head)) do
-          {:ok, response} ->
-            etag = fetch_etag(response.headers)
-            file_path = file_path_fun.(etag)
-
-            if File.exists?(file_path) do
-              from_file(file_path, source.load_opts)
-            else
-              with {:ok, response} <- request(http_client, http_opts) do
-                File.mkdir_p!(opts[:cache_dir])
-                File.write!(file_path, response.body)
-                from_file(file_path, source.load_opts)
-              end
-            end
-
-          {:error, _reason} ->
-            with {:ok, response} <- request(http_client, http_opts) do
-              etag = fetch_etag(response.headers)
-              file_path = file_path_fun.(etag)
-
-              File.mkdir_p!(opts[:cache_dir])
-              File.write!(file_path, response.body)
-              from_file(file_path, source.load_opts)
-            end
-        end
-      else
-        with {:ok, response} <- request(http_client, http_opts) do
-          etag = fetch_etag(response.headers)
-          file_path = file_path_fun.(etag)
-
-          File.mkdir_p!(opts[:cache_dir])
-          File.write!(file_path, response.body)
-          from_file(file_path, source.load_opts)
-        end
-      end
+         {:ok, sources} <- pretrained_sources(repo_id, opts) do
+      fetch_pretrained_from_sources(sources, opts)
     end
   end
 
   def from_pretrained(_repo_id, _opts),
     do: {:error, {:invalid_argument, "expected a Hugging Face repo id"}}
 
+  @doc """
+  Returns the predefined IREE tiktoken encoding names supported by the loader.
+  """
   @spec supported_tiktoken_encodings() :: [binary()]
   def supported_tiktoken_encodings, do: @tiktoken_encodings
 
+  @doc """
+  Builds a tokenizer from a pure Elixir model specification.
+
+  See `IREE.Tokenizers.Model.BPE`, `IREE.Tokenizers.Model.WordPiece`, and
+  `IREE.Tokenizers.Model.Unigram`.
+  """
   @spec init(Model.t()) :: result(t())
   def init(%Model{} = model) do
     with {:ok, buffer} <- tokenizer_json_from_model(model),
@@ -223,6 +257,11 @@ defmodule IREE.Tokenizers.Tokenizer do
 
   def init(_model), do: {:error, {:invalid_argument, "expected a model"}}
 
+  @doc """
+  Infers a tiktoken encoding name from a known model or deployment name.
+
+  Returns `nil` when the model name is not recognized.
+  """
   @spec tiktoken_encoding_for_model(binary()) :: binary() | nil
   def tiktoken_encoding_for_model(model) when is_binary(model) do
     infer_tiktoken_encoding(model)
@@ -230,6 +269,17 @@ defmodule IREE.Tokenizers.Tokenizer do
 
   def tiktoken_encoding_for_model(_model), do: nil
 
+  @doc """
+  Encodes a single binary input into an `IREE.Tokenizers.Encoding`.
+
+  Supported options:
+
+  - `:add_special_tokens` - include tokenizer post-processing special tokens,
+    defaults to `true`
+  - `:track_offsets` - track byte offsets, defaults to `false`
+  - `:encoding_transformations` - list of
+    `IREE.Tokenizers.Encoding.Transformation` values applied after encoding
+  """
   @spec encode(t(), encode_input(), keyword()) :: result(Encoding.t())
   def encode(tokenizer, input, opts \\ [])
 
@@ -257,6 +307,11 @@ defmodule IREE.Tokenizers.Tokenizer do
   def encode(%__MODULE__{}, _input, _opts),
     do: {:error, {:invalid_argument, "expected a binary input"}}
 
+  @doc """
+  Encodes multiple binary inputs in one batch call.
+
+  Uses the same options as `encode/3`.
+  """
   @spec encode_batch(t(), [encode_input()], keyword()) :: result([Encoding.t()])
   def encode_batch(tokenizer, inputs, opts \\ [])
 
@@ -290,17 +345,31 @@ defmodule IREE.Tokenizers.Tokenizer do
   def encode_batch(%__MODULE__{}, _inputs, _opts),
     do: {:error, {:invalid_argument, "expected a list of binary inputs"}}
 
+  @doc """
+  Decodes a list of token IDs back into text.
+
+  Supported options:
+
+  - `:skip_special_tokens` - suppress special tokens in the output text,
+    defaults to `true`
+  """
   @spec decode(t(), [integer()], keyword()) :: result(binary())
   def decode(tokenizer, ids, opts \\ [])
 
   def decode(%__MODULE__{} = tokenizer, ids, opts) when is_list(ids) do
     opts = Keyword.validate!(opts, skip_special_tokens: true)
-    IREE.Tokenizers.Native.tokenizer_decode(tokenizer, ids, opts)
+
+    with {:ok, text} <- IREE.Tokenizers.Native.tokenizer_decode(tokenizer, ids, opts) do
+      {:ok, maybe_fix_sentencepiece_bpe_decode(tokenizer, text)}
+    end
   end
 
   def decode(%__MODULE__{}, _ids, _opts),
     do: {:error, {:invalid_argument, "expected a list of token ids"}}
 
+  @doc """
+  Decodes multiple token ID lists in one batch call.
+  """
   @spec decode_batch(t(), [[integer()]], keyword()) :: result([binary()])
   def decode_batch(tokenizer, batch_ids, opts \\ [])
 
@@ -308,18 +377,33 @@ defmodule IREE.Tokenizers.Tokenizer do
     opts = Keyword.validate!(opts, skip_special_tokens: true)
 
     case Enum.find(batch_ids, &(not is_list(&1))) do
-      nil -> IREE.Tokenizers.Native.tokenizer_decode_batch(tokenizer, batch_ids, opts)
-      _ -> {:error, {:invalid_argument, "expected a list of token id lists"}}
+      nil ->
+        with {:ok, texts} <-
+               IREE.Tokenizers.Native.tokenizer_decode_batch(tokenizer, batch_ids, opts) do
+          {:ok, Enum.map(texts, &maybe_fix_sentencepiece_bpe_decode(tokenizer, &1))}
+        end
+
+      _ ->
+        {:error, {:invalid_argument, "expected a list of token id lists"}}
     end
   end
 
   def decode_batch(%__MODULE__{}, _batch_ids, _opts),
     do: {:error, {:invalid_argument, "expected a list of token id lists"}}
 
+  @doc """
+  Returns the number of active vocabulary entries.
+  """
   @spec vocab_size(t()) :: non_neg_integer()
   def vocab_size(%__MODULE__{} = tokenizer),
     do: IREE.Tokenizers.Native.tokenizer_vocab_size(tokenizer)
 
+  @doc """
+  Returns the tokenizer vocabulary as a `%{token => id}` map.
+
+  The `:with_added_tokens` option is accepted for compatibility and currently
+  defaults to `true`.
+  """
   @spec get_vocab(t(), keyword()) :: %{binary() => integer()}
   def get_vocab(%__MODULE__{} = tokenizer, opts \\ []) do
     _opts = Keyword.validate!(opts, with_added_tokens: true)
@@ -333,12 +417,24 @@ defmodule IREE.Tokenizers.Tokenizer do
     end)
   end
 
+  @doc """
+  Returns the size of the tokenizer vocabulary.
+
+  The `:with_added_tokens` option is accepted for compatibility and currently
+  defaults to `true`.
+  """
   @spec get_vocab_size(t(), keyword()) :: non_neg_integer()
   def get_vocab_size(%__MODULE__{} = tokenizer, opts \\ []) do
     _opts = Keyword.validate!(opts, with_added_tokens: true)
     vocab_size(tokenizer)
   end
 
+  @doc """
+  Returns the model specification used to build this tokenizer when available.
+
+  For tokenizers loaded from serialized files, this returns a minimal
+  `%IREE.Tokenizers.Model{}` containing only the model type metadata.
+  """
   @spec get_model(t()) :: Model.t()
   def get_model(%__MODULE__{} = tokenizer) do
     case ComponentRegistry.get(tokenizer.resource)[:model] do
@@ -350,6 +446,12 @@ defmodule IREE.Tokenizers.Tokenizer do
     end
   end
 
+  @doc """
+  Replaces the tokenizer model with the given model specification.
+
+  This currently rebuilds a new tokenizer from the provided model and returns
+  that tokenizer.
+  """
   @spec set_model(t(), Model.t()) :: t()
   def set_model(%__MODULE__{} = _tokenizer, %Model{} = model) do
     case init(model) do
@@ -358,16 +460,26 @@ defmodule IREE.Tokenizers.Tokenizer do
     end
   end
 
+  @doc """
+  Returns the tokenizer model type name, such as `"BPE"`, `"WordPiece"`, or
+  `"Unigram"`.
+  """
   @spec model_type(t()) :: binary()
   def model_type(%__MODULE__{} = tokenizer),
     do: IREE.Tokenizers.Native.tokenizer_model_type(tokenizer)
 
+  @doc """
+  Looks up the token ID for a token string.
+  """
   @spec token_to_id(t(), binary()) :: integer() | nil
   def token_to_id(%__MODULE__{} = tokenizer, token) when is_binary(token),
     do: IREE.Tokenizers.Native.tokenizer_token_to_id(tokenizer, token)
 
   def token_to_id(%__MODULE__{}, _token), do: nil
 
+  @doc """
+  Looks up the token string for a token ID.
+  """
   @spec id_to_token(t(), integer()) :: binary() | nil
   def id_to_token(%__MODULE__{} = tokenizer, id) when is_integer(id),
     do: IREE.Tokenizers.Native.tokenizer_id_to_token(tokenizer, id)
@@ -383,6 +495,10 @@ defmodule IREE.Tokenizers.Tokenizer do
         {:cls_token_id, :tokenizer_cls_token_id},
         {:mask_token_id, :tokenizer_mask_token_id}
       ] do
+    @doc """
+    Returns the token ID for the requested special token, or `nil` when that
+    token is not defined.
+    """
     @spec unquote(fun)(t()) :: integer() | nil
     def unquote(fun)(%__MODULE__{} = tokenizer),
       do: apply(IREE.Tokenizers.Native, unquote(native), [tokenizer])
@@ -390,6 +506,16 @@ defmodule IREE.Tokenizers.Tokenizer do
 
   defp maybe_put_auth(headers, nil), do: headers
   defp maybe_put_auth(headers, token), do: [{"authorization", "Bearer #{token}"} | headers]
+
+  defp maybe_fix_sentencepiece_bpe_decode(%__MODULE__{} = tokenizer, text) do
+    components = ComponentRegistry.get(tokenizer.resource)
+
+    if components[:source_format] == :sentencepiece_model and model_type(tokenizer) == "BPE" do
+      String.replace_prefix(text, " ", "")
+    else
+      text
+    end
+  end
 
   defp register_components(tokenizer, components) do
     ComponentRegistry.put(tokenizer.resource, components)
@@ -465,9 +591,14 @@ defmodule IREE.Tokenizers.Tokenizer do
   defp validate_load_options(opts) do
     opts =
       Keyword.validate!(opts,
-        format: :huggingface_json,
+        format: nil,
         tiktoken_encoding: nil
       )
+
+    opts =
+      Keyword.put_new_lazy(opts, :format, fn ->
+        infer_load_format(:buffer) || :huggingface_json
+      end)
 
     case opts[:format] do
       :huggingface_json ->
@@ -485,12 +616,22 @@ defmodule IREE.Tokenizers.Tokenizer do
             end
         end
 
+      :sentencepiece_model ->
+        {:ok, opts}
+
       other ->
         {:error, {:invalid_argument, "unsupported tokenizer format: #{inspect(other)}"}}
     end
   end
 
   defp normalize_load_options(opts, source_hint) do
+    opts =
+      if Keyword.has_key?(opts, :format) do
+        opts
+      else
+        Keyword.put(opts, :format, infer_load_format(source_hint) || :huggingface_json)
+      end
+
     with {:ok, opts} <- validate_load_options(opts),
          {:ok, encoding} <- ensure_tiktoken_encoding(opts, source_hint) do
       {:ok, Keyword.put(opts, :tiktoken_encoding, encoding)}
@@ -513,7 +654,11 @@ defmodule IREE.Tokenizers.Tokenizer do
     with {:ok, load_opts} <-
            normalize_load_options(Keyword.take(opts, [:format, :tiktoken_encoding]), repo_id),
          {:ok, filename} <-
-           normalize_filename(load_opts[:format], opts[:filename], load_opts[:tiktoken_encoding]) do
+           normalize_filename(
+             load_opts[:format],
+             opts[:filename],
+             load_opts[:tiktoken_encoding]
+           ) do
       {:ok,
        opts
        |> Keyword.put(:format, load_opts[:format])
@@ -534,6 +679,11 @@ defmodule IREE.Tokenizers.Tokenizer do
   end
 
   defp normalize_filename(:tiktoken, filename, _encoding) when is_binary(filename),
+    do: {:ok, filename}
+
+  defp normalize_filename(:sentencepiece_model, nil, _encoding), do: {:ok, nil}
+
+  defp normalize_filename(:sentencepiece_model, filename, _encoding) when is_binary(filename),
     do: {:ok, filename}
 
   defp normalize_filename(_format, _filename, _encoding),
@@ -616,7 +766,17 @@ defmodule IREE.Tokenizers.Tokenizer do
 
   defp infer_tiktoken_encoding(_source_hint), do: nil
 
-  defp pretrained_source(repo_id, opts) do
+  defp infer_load_format(source_hint) when source_hint in [:buffer, nil], do: nil
+
+  defp infer_load_format(source_hint) when is_binary(source_hint) do
+    cond do
+      String.ends_with?(source_hint, ".tiktoken") -> :tiktoken
+      String.ends_with?(source_hint, ".model") -> :sentencepiece_model
+      true -> nil
+    end
+  end
+
+  defp pretrained_sources(repo_id, opts) do
     load_opts = Keyword.take(opts, [:format, :tiktoken_encoding])
 
     case opts[:format] do
@@ -624,12 +784,14 @@ defmodule IREE.Tokenizers.Tokenizer do
         url = "/#{repo_id}/resolve/#{opts[:revision]}/#{opts[:filename]}"
 
         {:ok,
-         %{
-           base_url: @huggingface_base_url,
-           url: url,
-           cache_key: @huggingface_base_url <> url,
-           load_opts: load_opts
-         }}
+         [
+           %{
+             base_url: @huggingface_base_url,
+             url: url,
+             cache_key: @huggingface_base_url <> url,
+             load_opts: load_opts
+           }
+         ]}
 
       :tiktoken ->
         if builtin_openai_tiktoken_source?(repo_id, opts[:filename]) do
@@ -637,23 +799,124 @@ defmodule IREE.Tokenizers.Tokenizer do
           url = "/encodings/#{filename}"
 
           {:ok,
-           %{
-             base_url: @openai_tiktoken_base_url,
-             url: url,
-             cache_key: @openai_tiktoken_base_url <> url,
-             load_opts: load_opts
-           }}
+           [
+             %{
+               base_url: @openai_tiktoken_base_url,
+               url: url,
+               cache_key: @openai_tiktoken_base_url <> url,
+               load_opts: load_opts
+             }
+           ]}
         else
           url = "/#{repo_id}/resolve/#{opts[:revision]}/#{opts[:filename]}"
 
           {:ok,
+           [
+             %{
+               base_url: @huggingface_base_url,
+               url: url,
+               cache_key: @huggingface_base_url <> url,
+               load_opts: load_opts
+             }
+           ]}
+        end
+
+      :sentencepiece_model ->
+        filenames =
+          case opts[:filename] do
+            nil -> ["tokenizer.model", "spiece.model"]
+            filename -> [filename]
+          end
+
+        {:ok,
+         Enum.map(filenames, fn filename ->
+           url = "/#{repo_id}/resolve/#{opts[:revision]}/#{filename}"
+
            %{
              base_url: @huggingface_base_url,
              url: url,
              cache_key: @huggingface_base_url <> url,
              load_opts: load_opts
-           }}
-        end
+           }
+         end)}
+    end
+  end
+
+  defp fetch_pretrained_from_sources(sources, opts) do
+    do_fetch_pretrained_from_sources(sources, opts, nil)
+  end
+
+  defp do_fetch_pretrained_from_sources([], _opts, nil) do
+    {:error, {:not_found, "resource not found"}}
+  end
+
+  defp do_fetch_pretrained_from_sources([], _opts, last_error), do: last_error
+
+  defp do_fetch_pretrained_from_sources([source | rest], opts, _last_error) do
+    case fetch_pretrained_from_source(source, opts) do
+      {:error, {:not_found, _}} = error when rest != [] ->
+        do_fetch_pretrained_from_sources(rest, opts, error)
+
+      other ->
+        other
+    end
+  end
+
+  defp fetch_pretrained_from_source(source, opts) do
+    {http_client, http_opts} = opts[:http_client]
+    {:ok, app_version} = :application.get_key(:iree_tokenizers, :vsn)
+    app_version = List.to_string(app_version)
+
+    headers =
+      [{"user-agent", "iree_tokenizers/#{app_version}"}]
+      |> maybe_put_auth(opts[:token])
+
+    http_opts =
+      http_opts
+      |> Keyword.put_new(:base_url, source.base_url)
+      |> Keyword.put(:url, source.url)
+      |> Keyword.put(:method, :get)
+      |> Keyword.update(:headers, headers, fn existing -> existing ++ headers end)
+
+    file_path_fun = fn etag ->
+      Path.join(opts[:cache_dir], entry_filename(source.cache_key, etag))
+    end
+
+    if opts[:use_cache] do
+      case request(http_client, Keyword.put(http_opts, :method, :head)) do
+        {:ok, response} ->
+          etag = fetch_etag(response.headers)
+          file_path = file_path_fun.(etag)
+
+          if File.exists?(file_path) do
+            from_file(file_path, source.load_opts)
+          else
+            with {:ok, response} <- request(http_client, http_opts) do
+              File.mkdir_p!(opts[:cache_dir])
+              File.write!(file_path, response.body)
+              from_file(file_path, source.load_opts)
+            end
+          end
+
+        {:error, _reason} ->
+          with {:ok, response} <- request(http_client, http_opts) do
+            etag = fetch_etag(response.headers)
+            file_path = file_path_fun.(etag)
+
+            File.mkdir_p!(opts[:cache_dir])
+            File.write!(file_path, response.body)
+            from_file(file_path, source.load_opts)
+          end
+      end
+    else
+      with {:ok, response} <- request(http_client, http_opts) do
+        etag = fetch_etag(response.headers)
+        file_path = file_path_fun.(etag)
+
+        File.mkdir_p!(opts[:cache_dir])
+        File.write!(file_path, response.body)
+        from_file(file_path, source.load_opts)
+      end
     end
   end
 

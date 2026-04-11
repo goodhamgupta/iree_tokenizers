@@ -29,6 +29,11 @@ defmodule IREETokenizersBench.ModelMatrix do
       repos: ["mistralai/Ministral-3-3B-Reasoning-2512"]
     },
     %{
+      label: "BAAI/bge-m3",
+      requested_repo: "BAAI/bge-m3",
+      repos: ["BAAI/bge-m3"]
+    },
+    %{
       label: "arcee-ai/Trinity-Large-Preview",
       requested_repo: "arcee-ai/Trinity-Large-Preview",
       repos: ["arcee-ai/Trinity-Large-Preview"]

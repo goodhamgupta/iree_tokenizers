@@ -4,7 +4,7 @@ use rustler::{NifStruct, NifTaggedEnum, ResourceArc};
 
 use crate::{
     error::{check_status, is_resource_exhausted, ErrorKind, Result, TokenizerError},
-    ffi,
+    ffi, sentencepiece,
     stream::{DecodeStreamResource, DecodeStreamState, EncodeStreamResource, EncodeStreamState},
 };
 
@@ -91,6 +91,22 @@ pub fn tokenizer_from_tiktoken_buffer(
         ffi::iree_tokenizer_from_tiktoken(
             ffi::make_string_view(buffer.as_slice()),
             config,
+            ffi::system_allocator(),
+            &mut raw,
+        )
+    };
+    check_status(status)?;
+
+    tokenizer_from_raw(raw)
+}
+
+#[rustler::nif(schedule = "DirtyCpu")]
+pub fn tokenizer_from_sentencepiece_model(buffer: rustler::Binary) -> Result<Tokenizer> {
+    let json = sentencepiece::model_to_tokenizer_json(buffer.as_slice())?;
+    let mut raw = std::ptr::null_mut();
+    let status = unsafe {
+        ffi::iree_tokenizer_from_huggingface_json(
+            ffi::make_string_view(json.as_slice()),
             ffi::system_allocator(),
             &mut raw,
         )

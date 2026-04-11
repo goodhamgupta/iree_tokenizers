@@ -1,12 +1,12 @@
 # IREE.Tokenizers
 
-Fast Hugging Face `tokenizer.json` and OpenAI `.tiktoken` bindings for Elixir backed by the IREE tokenizer runtime. I discovered [IREE Tokenizers](https://github.com/iree-org/iree-tokenizer-py) from the [ZML.ai blog](https://zml.ai/posts/iree-tokenizer/), a company I deeply admire!
+Fast Hugging Face `tokenizer.json`, OpenAI `.tiktoken`, and SentencePiece `.model` bindings for Elixir backed by the IREE tokenizer runtime. I discovered [IREE Tokenizers](https://github.com/iree-org/iree-tokenizer-py) from the [ZML.ai blog](https://zml.ai/posts/iree-tokenizer/), a company I deeply admire!
 
 
 ## Features
 
-- Load tokenizer definitions from a local `tokenizer.json` or `.tiktoken` buffer or file
-- Download and cache `tokenizer.json` or `.tiktoken` files from the Hugging Face Hub
+- Load tokenizer definitions from a local `tokenizer.json`, `.tiktoken`, or SentencePiece `.model` buffer or file
+- Download and cache `tokenizer.json`, `.tiktoken`, or SentencePiece `.model` files from the Hugging Face Hub
 - One-shot encode/decode and batched encode/decode
 - Token offsets and type IDs
 - Vocab lookup helpers
@@ -19,13 +19,14 @@ V1 is intentionally inference-only.
 - Supported:
   - Hugging Face `tokenizer.json`
   - OpenAI `.tiktoken`
+  - SentencePiece `.model`
   - BPE
   - WordPiece
   - Unigram
 - Deferred:
-  - SentencePiece `.model`
   - pair-sequence encode input
   - training and tokenizer mutation APIs
+  - full `elixir-nx/tokenizers` configuration surface parity
 
 ## Repository Usage
 
@@ -75,6 +76,18 @@ You can also load directly from the Hugging Face Hub:
 
 For custom `.tiktoken` repos or arbitrary in-memory buffers, pass `tiktoken_encoding:` explicitly when it cannot be inferred from the repo/model name or filename.
 
+For SentencePiece `.model` files, use `format: :sentencepiece_model` for raw buffers and pretrained loads. Local files ending in `.model` are inferred automatically:
+
+```elixir
+{:ok, tokenizer} =
+  IREE.Tokenizers.Tokenizer.from_file("spiece.model")
+
+{:ok, tokenizer} =
+  IREE.Tokenizers.Tokenizer.from_pretrained("google-t5/t5-small",
+    format: :sentencepiece_model
+  )
+```
+
 If you need authentication for gated/private repos:
 
 ```elixir
@@ -109,13 +122,42 @@ The local fixture comparison script now writes:
 - [`bench/results/tokenizers_compare_encode.svg`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare_encode.svg?raw=1)
 - [`bench/results/tokenizers_compare_decode.svg`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare_decode.svg?raw=1)
 
-Encode throughput chart:
+The SentencePiece-specific comparison script writes:
+- [`bench/results/sentencepiece_compare.md`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/sentencepiece_compare.md?raw=1)
+- [`bench/results/sentencepiece_compare_encode.svg`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/sentencepiece_compare_encode.svg?raw=1)
+- [`bench/results/sentencepiece_compare_decode.svg`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/sentencepiece_compare_decode.svg?raw=1)
+
+Fixture encode latency chart:
 
 ![Fixture encode comparison](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare_encode.svg?raw=1)
 
-Decode throughput chart:
+Fixture decode latency chart:
 
 ![Fixture decode comparison](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare_decode.svg?raw=1)
+
+#### SentencePiece `.model` comparison
+
+The SentencePiece-specific comparison script checks direct `.model` loading against the official
+[`tokenizers`](https://hex.pm/packages/tokenizers) package loaded from the corresponding
+`tokenizer.json`.
+
+Current checked-in results from
+[`bench/results/sentencepiece_compare.md`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/sentencepiece_compare.md?raw=1):
+
+| Model | Repo | Input bytes | Output ids | IREE `.model` | `tokenizers` | Speedup |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| `T5-small (SentencePiece Unigram)` encode | `google-t5/t5-small` | `52` | `10` | `12.0 μs` | `35.0 μs` | `2.92x` |
+| `LLaMA tokenizer (SentencePiece BPE)` encode | `hf-internal-testing/llama-tokenizer` | `44` | `12` | `15.0 μs` | `16.0 μs` | `1.07x` |
+| `T5-small (SentencePiece Unigram)` decode | `google-t5/t5-small` | `52` | `10` | `4.0 μs` | `3.0 μs` | `0.75x` |
+| `LLaMA tokenizer (SentencePiece BPE)` decode | `hf-internal-testing/llama-tokenizer` | `44` | `12` | `9.0 μs` | `12.0 μs` | `1.33x` |
+
+SentencePiece encode latency chart:
+
+![SentencePiece encode comparison](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/sentencepiece_compare_encode.svg?raw=1)
+
+SentencePiece decode latency chart:
+
+![SentencePiece decode comparison](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/sentencepiece_compare_decode.svg?raw=1)
 
 #### Model latency comparison
 
@@ -125,11 +167,12 @@ contains:
 
 | Model | Repo used | Tokenizers package (ms) | IREE oneshot / stream (ms) | Speedup |
 | --- | --- | ---: | ---: | --- |
-| `LiquidAI/LFM2.5-1.2B-Instruct` | `LiquidAI/LFM2.5-1.2B-Instruct` | `64.0 ms` | `4.68 ms / 4.77 ms` | `13.7x / 13.4x` |
-| `Qwen/Qwen3.5-9B` | `Qwen/Qwen3.5-9B` | `70.2 ms` | `4.93 ms / 11.3 ms` | `14.2x / 6.2x` |
-| `zai-org/GLM-5.1` | `zai-org/GLM-5.1` | `63.1 ms` | `4.74 ms / 5.59 ms` | `13.3x / 11.3x` |
-| `mistralai/Ministral-3-3B-Reasoning-2512` | `mistralai/Ministral-3-3B-Reasoning-2512` | `63.0 ms` | `4.69 ms / 5.66 ms` | `13.4x / 11.1x` |
-| `google/gemma-4-31B-it` | `google/gemma-4-31B-it` | `20.1 ms` | `3.39 ms / 3.81 ms` | `5.9x / 5.3x` |
+| `LiquidAI/LFM2.5-1.2B-Instruct` | `LiquidAI/LFM2.5-1.2B-Instruct` | `61.4 ms` | `15.8 ms / 5.03 ms` | `3.9x / 12.2x` |
+| `Qwen/Qwen3.5-9B` | `Qwen/Qwen3.5-9B` | `69.5 ms` | `10.9 ms / 10.7 ms` | `6.4x / 6.5x` |
+| `zai-org/GLM-5.1` | `zai-org/GLM-5.1` | `59.2 ms` | `10.7 ms / 5.51 ms` | `5.5x / 10.7x` |
+| `mistralai/Ministral-3-3B-Reasoning-2512` | `mistralai/Ministral-3-3B-Reasoning-2512` | `79.0 ms` | `10.8 ms / 5.89 ms` | `7.3x / 13.4x` |
+| `BAAI/bge-m3` | `BAAI/bge-m3` | `46.7 ms` | `23.1 ms / 14.3 ms` | `2.0x / 3.3x` |
+| `google/gemma-4-31B-it` | `google/gemma-4-31B-it` | `20.4 ms` | `10.3 ms / 3.78 ms` | `2.0x / 5.4x` |
 
 
 The benchmark harness intentionally keeps only one representative repo per tokenizer family when multiple model variants share the same tokenizer. The current family-level matrix targets:
@@ -138,6 +181,7 @@ The benchmark harness intentionally keeps only one representative repo per token
 - `Qwen/Qwen3.5-9B`
 - `zai-org/GLM-5.1` with fallback to `zai-org/GLM-5`
 - `mistralai/Ministral-3-3B-Reasoning-2512`
+- `BAAI/bge-m3`
 - `arcee-ai/Trinity-Large-Preview`
 - `google/gemma-4-31B-it`
 
@@ -168,6 +212,12 @@ mix run compare.exs
 ```
 
 This generates the fixture comparison markdown and SVG charts in `bench/results/`.
+
+Generate the SentencePiece `.model` comparison charts:
+
+```bash
+mix run sentencepiece_compare.exs
+```
 
 Generate the multi-model latency/speedup graphs:
 

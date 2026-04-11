@@ -9,6 +9,7 @@ against the published `tokenizers` package.
 cd bench
 mix deps.get
 mix run compare.exs
+mix run sentencepiece_compare.exs
 MODEL_FILTER="Qwen/Qwen3.5-9B" mix run model_matrix_graphs.exs
 ```
 
@@ -19,6 +20,11 @@ and long encode/decode workloads.
 - `bench/results/tokenizers_compare_encode.svg`
 - `bench/results/tokenizers_compare_decode.svg`
 - `bench/results/tokenizers_compare.md`
+
+`sentencepiece_compare.exs` generates:
+- `bench/results/sentencepiece_compare_encode.svg`
+- `bench/results/sentencepiece_compare_decode.svg`
+- `bench/results/sentencepiece_compare.md`
 
 `model_matrix_graphs.exs` benchmarks a curated list of public model repos and
 generates latency and speedup SVG charts similar to the ZML blog post. Set

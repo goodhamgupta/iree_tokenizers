@@ -2,7 +2,7 @@ defmodule IREETokenizers.MixProject do
   use Mix.Project
 
   @source_url "https://github.com/goodhamgupta/iree_tokenizers"
-  @version "0.2.0"
+  @version "0.3.0"
 
   def project do
     [
@@ -14,7 +14,7 @@ defmodule IREETokenizers.MixProject do
       package: package(),
       docs: docs(),
       description:
-        "Fast Hugging Face tokenizer.json and OpenAI tiktoken bindings for Elixir via the IREE tokenizer runtime"
+        "Fast Hugging Face tokenizer.json, OpenAI tiktoken, and SentencePiece model bindings for Elixir via the IREE tokenizer runtime"
     ]
   end
 
@@ -107,6 +107,7 @@ defmodule IREETokenizers.MixProject do
       "native/iree_tokenizers_native/src/error.rs",
       "native/iree_tokenizers_native/src/ffi.rs",
       "native/iree_tokenizers_native/src/lib.rs",
+      "native/iree_tokenizers_native/src/sentencepiece.rs",
       "native/iree_tokenizers_native/src/stream.rs",
       "native/iree_tokenizers_native/src/tokenizer.rs",
       "native/iree_tokenizers_native/vendor/IREE_COMMIT",

@@ -1,10 +1,20 @@
 defmodule IREE.Tokenizers.Model.BPE do
   @moduledoc """
-  BPE model spec compatible with `IREE.Tokenizers.Tokenizer.init/1`.
+  BPE model specification compatible with `IREE.Tokenizers.Tokenizer.init/1`.
+
+  Use this module when you already have a vocabulary and merge list in memory
+  or on disk and want to build an IREE-backed tokenizer from those pieces.
   """
 
   alias IREE.Tokenizers.Model
 
+  @typedoc """
+  Options for BPE model construction.
+
+  Supported options are intentionally close to `elixir-nx/tokenizers`, though
+  only the subset that can be represented through the current IREE-backed load
+  path is applied.
+  """
   @type options :: [
           cache_capacity: number(),
           dropout: float(),
@@ -17,6 +27,12 @@ defmodule IREE.Tokenizers.Model.BPE do
 
   @spec init(%{String.t() => integer()}, [{String.t(), String.t()}], options()) ::
           {:ok, Model.t()}
+  @doc """
+  Builds a BPE model specification from an in-memory vocabulary and merge list.
+
+  The returned `%IREE.Tokenizers.Model{}` can be passed to
+  `IREE.Tokenizers.Tokenizer.init/1`.
+  """
   def init(vocab, merges, opts \\ []) when is_map(vocab) and is_list(merges) do
     opts =
       Keyword.validate!(opts,
@@ -54,9 +70,18 @@ defmodule IREE.Tokenizers.Model.BPE do
   end
 
   @spec empty() :: {:ok, Model.t()}
+  @doc """
+  Returns an empty BPE model specification.
+  """
   def empty, do: init(%{}, [])
 
   @spec from_file(String.t(), String.t(), options()) :: {:ok, Model.t()} | {:error, term()}
+  @doc """
+  Builds a BPE model specification from a vocabulary JSON file and a merges file.
+
+  The vocabulary file is expected to be a JSON object mapping token strings to
+  integer IDs. The merges file is expected to contain one merge pair per line.
+  """
   def from_file(vocab_path, merges_path, opts \\ []) do
     with {:ok, vocab_json} <- File.read(vocab_path),
          {:ok, vocab} <- Jason.decode(vocab_json),
