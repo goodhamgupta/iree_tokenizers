@@ -472,9 +472,7 @@ fn reconstruct_sentencepiece_bpe_merges(
             }
         }
 
-        local.sort_by(|left, right| {
-            (left.3, left.4).cmp(&(right.3, right.4))
-        });
+        local.sort_by(|left, right| (left.3, left.4).cmp(&(right.3, right.4)));
         merges.extend(local);
     }
 
@@ -577,10 +575,9 @@ mod tests {
             assert_eq!(encoding.ids, spp_ids, "encode mismatch for {text:?}");
 
             let decoded = decode_sentencepiece_bpe(&tokenizer, &encoding.ids, false).unwrap();
-            let spp_decoded = spp.decode_piece_ids(
-                &spp_ids.iter().map(|id| *id as u32).collect::<Vec<_>>(),
-            )
-            .unwrap();
+            let spp_decoded = spp
+                .decode_piece_ids(&spp_ids.iter().map(|id| *id as u32).collect::<Vec<_>>())
+                .unwrap();
 
             assert_eq!(decoded, spp_decoded, "decode mismatch for {text:?}");
         }

@@ -118,7 +118,8 @@ impl EncodeStreamState {
                 ids.truncate(produced);
                 all_ids.extend_from_slice(&ids);
 
-                let has_pending = unsafe { ffi::iree_tokenizer_encode_state_has_pending(self.state) };
+                let has_pending =
+                    unsafe { ffi::iree_tokenizer_encode_state_has_pending(self.state) };
                 if !has_pending {
                     return Ok(all_ids);
                 }

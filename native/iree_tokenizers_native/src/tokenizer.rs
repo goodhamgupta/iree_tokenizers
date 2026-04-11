@@ -287,7 +287,9 @@ pub fn tokenizer_decode_batch(
     if tokenizer.resource.decode_strategy == DecodeStrategy::SentencePieceBpe {
         return batch_ids
             .iter()
-            .map(|ids| decode_sentencepiece_bpe(&tokenizer.resource, ids, options.skip_special_tokens))
+            .map(|ids| {
+                decode_sentencepiece_bpe(&tokenizer.resource, ids, options.skip_special_tokens)
+            })
             .collect();
     }
 
@@ -692,7 +694,10 @@ impl Default for DecodeStrategy {
     }
 }
 
-fn tokenizer_from_raw(raw: *mut ffi::iree_tokenizer_t, metadata: TokenizerMetadata) -> Result<Tokenizer> {
+fn tokenizer_from_raw(
+    raw: *mut ffi::iree_tokenizer_t,
+    metadata: TokenizerMetadata,
+) -> Result<Tokenizer> {
     let model_type = string_view_to_string(unsafe { ffi::iree_tokenizer_model_type_name(raw) })
         .map_err(|err| {
             TokenizerError::new(
@@ -824,13 +829,14 @@ pub(crate) fn decode_sentencepiece_bpe(
             continue;
         }
 
-        let token = string_view_to_string(unsafe { ffi::iree_tokenizer_vocab_token_text(vocab, id) })
-            .map_err(|err| {
-                TokenizerError::new(
-                    ErrorKind::Internal,
-                    format!("invalid UTF-8 in tokenizer metadata: {err}"),
-                )
-            })?;
+        let token =
+            string_view_to_string(unsafe { ffi::iree_tokenizer_vocab_token_text(vocab, id) })
+                .map_err(|err| {
+                    TokenizerError::new(
+                        ErrorKind::Internal,
+                        format!("invalid UTF-8 in tokenizer metadata: {err}"),
+                    )
+                })?;
 
         if let Some(byte) = parse_byte_fallback_token(&token) {
             pending_bytes.push(byte);
