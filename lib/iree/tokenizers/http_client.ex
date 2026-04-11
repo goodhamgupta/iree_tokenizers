@@ -9,6 +9,7 @@ defmodule IREE.Tokenizers.HTTPClient do
   def request(opts) do
     url = build_url(opts)
     method = opts |> Keyword.get(:method, :get) |> to_method()
+    host = URI.parse(url).host |> to_charlist()
 
     headers =
       opts
@@ -18,7 +19,11 @@ defmodule IREE.Tokenizers.HTTPClient do
     http_opts = [
       ssl: [
         verify: :verify_peer,
-        cacertfile: String.to_charlist(CAStore.file_path())
+        cacertfile: String.to_charlist(CAStore.file_path()),
+        server_name_indication: host,
+        customize_hostname_check: [
+          match_fun: :public_key.pkix_verify_hostname_match_fun(:https)
+        ]
       ]
     ]
 

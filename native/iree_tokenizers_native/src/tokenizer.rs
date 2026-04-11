@@ -8,6 +8,16 @@ use crate::{
     stream::{DecodeStreamResource, DecodeStreamState, EncodeStreamResource, EncodeStreamState},
 };
 
+const SUPPORTED_TIKTOKEN_ENCODINGS: [&str; 7] = [
+    "cl100k_base",
+    "o200k_base",
+    "o200k_harmony",
+    "r50k_base",
+    "gpt2",
+    "p50k_base",
+    "p50k_edit",
+];
+
 pub struct TokenizerResource {
     pub(crate) ptr: *mut ffi::iree_tokenizer_t,
     pub(crate) model_type: String,
@@ -39,6 +49,9 @@ pub struct Encoding {
     pub ids: Vec<i32>,
     pub type_ids: Vec<u8>,
     pub offsets: Option<Vec<(u64, u64)>>,
+    pub attention_mask: Vec<u8>,
+    pub special_tokens_mask: Vec<u8>,
+    pub tokens: Vec<String>,
 }
 
 #[derive(NifTaggedEnum)]
@@ -64,20 +77,27 @@ pub fn tokenizer_from_buffer(buffer: rustler::Binary) -> Result<Tokenizer> {
     };
     check_status(status)?;
 
-    let model_type = string_view_to_string(unsafe { ffi::iree_tokenizer_model_type_name(raw) })
-        .map_err(|err| {
-            TokenizerError::new(
-                ErrorKind::Internal,
-                format!("invalid UTF-8 in tokenizer metadata: {err}"),
-            )
-        })?;
+    tokenizer_from_raw(raw)
+}
 
-    Ok(Tokenizer {
-        resource: ResourceArc::new(TokenizerResource {
-            ptr: raw,
-            model_type,
-        }),
-    })
+#[rustler::nif(schedule = "DirtyCpu")]
+pub fn tokenizer_from_tiktoken_buffer(
+    buffer: rustler::Binary,
+    encoding: String,
+) -> Result<Tokenizer> {
+    let config = tiktoken_config_by_name(&encoding)?;
+    let mut raw = std::ptr::null_mut();
+    let status = unsafe {
+        ffi::iree_tokenizer_from_tiktoken(
+            ffi::make_string_view(buffer.as_slice()),
+            config,
+            ffi::system_allocator(),
+            &mut raw,
+        )
+    };
+    check_status(status)?;
+
+    tokenizer_from_raw(raw)
 }
 
 #[rustler::nif(schedule = "DirtyCpu")]
@@ -190,10 +210,16 @@ pub fn tokenizer_encode_batch(
                     None
                 };
 
+                let (special_tokens_mask, tokens) =
+                    encoding_metadata(&tokenizer.resource, &ids_bufs[index]);
+
                 Encoding {
                     ids: std::mem::take(&mut ids_bufs[index]),
                     type_ids: std::mem::take(&mut type_ids_bufs[index]),
                     offsets,
+                    attention_mask: vec![1; item.out_token_count],
+                    special_tokens_mask,
+                    tokens,
                 }
             })
             .collect();
@@ -290,6 +316,12 @@ pub fn tokenizer_decode_batch(
 pub fn tokenizer_vocab_size(tokenizer: Tokenizer) -> usize {
     let vocab = unsafe { ffi::iree_tokenizer_vocab(tokenizer.resource.ptr) };
     unsafe { ffi::iree_tokenizer_vocab_token_count(vocab) }
+}
+
+#[rustler::nif]
+pub fn tokenizer_vocab_capacity(tokenizer: Tokenizer) -> usize {
+    let vocab = unsafe { ffi::iree_tokenizer_vocab(tokenizer.resource.ptr) };
+    unsafe { ffi::iree_tokenizer_vocab_capacity(vocab) }
 }
 
 #[rustler::nif]
@@ -446,10 +478,15 @@ pub fn encode_impl(
             None
         };
 
+        let (special_tokens_mask, tokens) = encoding_metadata(tokenizer, &ids);
+
         return Ok(Encoding {
             ids,
             type_ids,
             offsets,
+            attention_mask: vec![1; token_count],
+            special_tokens_mask,
+            tokens,
         });
     }
 }
@@ -577,4 +614,53 @@ struct ParsedDecodeOptions {
 
 pub(crate) fn invalid_argument(message: impl Into<String>) -> TokenizerError {
     TokenizerError::new(ErrorKind::InvalidArgument, message)
+}
+
+fn encoding_metadata(tokenizer: &TokenizerResource, ids: &[i32]) -> (Vec<u8>, Vec<String>) {
+    let vocab = unsafe { ffi::iree_tokenizer_vocab(tokenizer.ptr) };
+    let mut special_tokens_mask = Vec::with_capacity(ids.len());
+    let mut tokens = Vec::with_capacity(ids.len());
+
+    for &id in ids {
+        let attrs = unsafe { ffi::iree_tokenizer_vocab_token_attrs(vocab, id) };
+        special_tokens_mask.push(u8::from(
+            (attrs & ffi::IREE_TOKENIZER_TOKEN_ATTR_SPECIAL) != 0,
+        ));
+        let view = unsafe { ffi::iree_tokenizer_vocab_token_text(vocab, id) };
+        tokens.push(string_view_to_string(view).unwrap_or_default());
+    }
+
+    (special_tokens_mask, tokens)
+}
+
+fn tokenizer_from_raw(raw: *mut ffi::iree_tokenizer_t) -> Result<Tokenizer> {
+    let model_type = string_view_to_string(unsafe { ffi::iree_tokenizer_model_type_name(raw) })
+        .map_err(|err| {
+            TokenizerError::new(
+                ErrorKind::Internal,
+                format!("invalid UTF-8 in tokenizer metadata: {err}"),
+            )
+        })?;
+
+    Ok(Tokenizer {
+        resource: ResourceArc::new(TokenizerResource {
+            ptr: raw,
+            model_type,
+        }),
+    })
+}
+
+fn tiktoken_config_by_name(encoding: &str) -> Result<*const ffi::iree_tokenizer_tiktoken_config_t> {
+    let config = unsafe {
+        ffi::iree_tokenizer_tiktoken_config_by_name(ffi::make_string_view(encoding.as_bytes()))
+    };
+
+    if config.is_null() {
+        Err(invalid_argument(format!(
+            "unknown tiktoken encoding {encoding:?}; supported encodings: {}",
+            SUPPORTED_TIKTOKEN_ENCODINGS.join(", ")
+        )))
+    } else {
+        Ok(config)
+    }
 }

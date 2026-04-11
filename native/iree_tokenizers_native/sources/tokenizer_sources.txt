@@ -15,6 +15,7 @@ vendor/iree_tokenizer_src/iree/tokenizer/format/huggingface/normalizer_json.c
 vendor/iree_tokenizer_src/iree/tokenizer/format/huggingface/postprocessor_json.c
 vendor/iree_tokenizer_src/iree/tokenizer/format/huggingface/segmenter_json.c
 vendor/iree_tokenizer_src/iree/tokenizer/format/huggingface/tokenizer_json.c
+vendor/iree_tokenizer_src/iree/tokenizer/format/tiktoken/tiktoken.c
 vendor/iree_tokenizer_src/iree/tokenizer/model.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/bpe.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/bpe_backtrack.c

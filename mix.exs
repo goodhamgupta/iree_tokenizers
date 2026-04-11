@@ -2,7 +2,7 @@ defmodule IREETokenizers.MixProject do
   use Mix.Project
 
   @source_url "https://github.com/goodhamgupta/iree_tokenizers"
-  @version "0.1.0"
+  @version "0.2.0"
 
   def project do
     [
@@ -14,7 +14,7 @@ defmodule IREETokenizers.MixProject do
       package: package(),
       docs: docs(),
       description:
-        "Fast Hugging Face tokenizer.json bindings for Elixir via the IREE tokenizer runtime"
+        "Fast Hugging Face tokenizer.json and OpenAI tiktoken bindings for Elixir via the IREE tokenizer runtime"
     ]
   end
 
@@ -37,8 +37,10 @@ defmodule IREETokenizers.MixProject do
     [
       {:castore, "~> 0.1 or ~> 1.0"},
       {:ex_doc, "~> 0.38", only: :docs, runtime: false},
+      {:jason, "~> 1.4"},
       {:rustler, "~> 0.37.3", optional: true, runtime: false},
-      {:rustler_precompiled, "~> 0.8"}
+      {:rustler_precompiled, "~> 0.8"},
+      {:tokenizers, "~> 0.5.1", only: :test}
     ]
   end
 
@@ -60,6 +62,11 @@ defmodule IREETokenizers.MixProject do
         Tokenization: [
           IREE.Tokenizers.Tokenizer,
           IREE.Tokenizers.Encoding,
+          IREE.Tokenizers.Encoding.Transformation,
+          IREE.Tokenizers.Model,
+          IREE.Tokenizers.Model.BPE,
+          IREE.Tokenizers.Model.WordPiece,
+          IREE.Tokenizers.Model.Unigram,
           IREE.Tokenizers.EncodeStream,
           IREE.Tokenizers.DecodeStream
         ],
@@ -83,7 +90,13 @@ defmodule IREETokenizers.MixProject do
       "lib/iree/tokenizers/decode_stream.ex",
       "lib/iree/tokenizers/encode_stream.ex",
       "lib/iree/tokenizers/encoding.ex",
+      "lib/iree/tokenizers/encoding/transformation.ex",
+      "lib/iree/tokenizers/component_registry.ex",
       "lib/iree/tokenizers/http_client.ex",
+      "lib/iree/tokenizers/model.ex",
+      "lib/iree/tokenizers/model/bpe.ex",
+      "lib/iree/tokenizers/model/unigram.ex",
+      "lib/iree/tokenizers/model/wordpiece.ex",
       "lib/iree/tokenizers/native.ex",
       "lib/iree/tokenizers/tokenizer.ex",
       "native/iree_tokenizers_native/Cargo.lock",

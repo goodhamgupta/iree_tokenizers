@@ -44,7 +44,6 @@ rm -rf \
   "${VENDOR_ROOT}/iree/base/tooling" \
   "${VENDOR_ROOT}/iree/tokenizer/tools" \
   "${VENDOR_ROOT}/iree/tokenizer/testing" \
-  "${VENDOR_ROOT}/iree/tokenizer/format/tiktoken" \
   "${VENDOR_ROOT}/iree/tokenizer/testdata"
 
 mkdir -p "${REPO_ROOT}/native/iree_tokenizers_native/sources"
@@ -65,7 +64,6 @@ find "${VENDOR_ROOT}/iree/tokenizer" -name '*.c' \
   ! -path '*/testing/*' \
   ! -path '*/tools/*' \
   ! -path '*/testdata/*' \
-  ! -path '*/format/tiktoken/*' \
   | sed "s#^${REPO_ROOT}/native/iree_tokenizers_native/##" \
   | sort > "${REPO_ROOT}/native/iree_tokenizers_native/sources/tokenizer_sources.txt"
 

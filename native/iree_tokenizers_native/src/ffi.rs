@@ -12,6 +12,7 @@ pub const IREE_TOKENIZER_TRANSFORM_BUFFER_MAX_SIZE: usize = 16 * 1024;
 pub const IREE_TOKENIZER_TRANSFORM_BUFFER_EXPANSION_FACTOR: usize = 3;
 pub const IREE_TOKENIZER_TRANSFORM_BUFFER_MIN_SIZE: usize = 4096;
 pub const IREE_TOKENIZER_DECODE_OUTPUT_RECOMMENDED_SIZE: usize = 2048;
+pub const IREE_TOKENIZER_TOKEN_ATTR_SPECIAL: u16 = 1u16 << 3;
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -106,6 +107,11 @@ pub struct iree_tokenizer_decode_state_t {
 
 #[repr(C)]
 pub struct iree_tokenizer_vocab_t {
+    _private: [u8; 0],
+}
+
+#[repr(C)]
+pub struct iree_tokenizer_tiktoken_config_t {
     _private: [u8; 0],
 }
 
@@ -210,6 +216,17 @@ unsafe extern "C" {
 
     pub fn iree_tokenizer_from_huggingface_json(
         json: iree_string_view_t,
+        allocator: iree_allocator_t,
+        out_tokenizer: *mut *mut iree_tokenizer_t,
+    ) -> iree_status_t;
+
+    pub fn iree_tokenizer_tiktoken_config_by_name(
+        name: iree_string_view_t,
+    ) -> *const iree_tokenizer_tiktoken_config_t;
+
+    pub fn iree_tokenizer_from_tiktoken(
+        data: iree_string_view_t,
+        config: *const iree_tokenizer_tiktoken_config_t,
         allocator: iree_allocator_t,
         out_tokenizer: *mut *mut iree_tokenizer_t,
     ) -> iree_status_t;
@@ -324,6 +341,11 @@ unsafe extern "C" {
         vocab: *const iree_tokenizer_vocab_t,
         token_id: i32,
     ) -> iree_string_view_t;
+
+    pub fn iree_tokenizer_vocab_token_attrs(
+        vocab: *const iree_tokenizer_vocab_t,
+        token_id: i32,
+    ) -> u16;
 
     pub fn iree_tokenizer_vocab_capacity(vocab: *const iree_tokenizer_vocab_t) -> usize;
     pub fn iree_tokenizer_vocab_token_count(vocab: *const iree_tokenizer_vocab_t) -> usize;

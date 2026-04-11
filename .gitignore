@@ -16,3 +16,6 @@
 !/bench/results/model_matrix.md
 !/bench/results/model_matrix_latency.svg
 !/bench/results/model_matrix_speedup.svg
+!/bench/results/tokenizers_compare.md
+!/bench/results/tokenizers_compare_encode.svg
+!/bench/results/tokenizers_compare_decode.svg

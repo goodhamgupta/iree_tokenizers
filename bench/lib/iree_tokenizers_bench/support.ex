@@ -70,14 +70,19 @@ defmodule IREETokenizersBench.Support do
   def format_tokens_per_second(value), do: "#{Float.round(value, 1)} tokens/sec"
 
   def format_ms(value) do
-    rounded =
-      cond do
-        value >= 100 -> Float.round(value, 0)
-        value >= 10 -> Float.round(value, 1)
-        true -> Float.round(value, 2)
-      end
+    cond do
+      value < 1 ->
+        "#{Float.round(value * 1_000, 1)} μs"
 
-    "#{rounded} ms"
+      value >= 100 ->
+        "#{Float.round(value, 0)} ms"
+
+      value >= 10 ->
+        "#{Float.round(value, 1)} ms"
+
+      true ->
+        "#{Float.round(value, 2)} ms"
+    end
   end
 
   def render_throughput_svg(path, subtitle, bars) do
@@ -226,6 +231,72 @@ defmodule IREETokenizersBench.Support do
     File.write!(path, svg)
   end
 
+  def render_dual_series_svg(path, title, subtitle, rows, left_series, right_series) do
+    width = 1280
+    header_height = 116
+    row_height = 78
+    height = header_height + row_height * length(rows) + 36
+    chart_left = 320
+    chart_width = 720
+    speedup_x = width - 40
+    speedup_label_x = width - 120
+    speedup_guard_x = width - 220
+
+    max_value =
+      rows
+      |> Enum.flat_map(fn row -> [row[left_series.key], row[right_series.key]] end)
+      |> Enum.max(fn -> 1.0 end)
+
+    legend = """
+    <rect x="18" y="76" width="14" height="14" rx="3" fill="#{left_series.color}" />
+    <text x="40" y="88" fill="#{Map.get(left_series, :text_fill, "#D9E1F2")}" font-family="system-ui, sans-serif" font-size="13">#{left_series.label}</text>
+    <rect x="188" y="76" width="14" height="14" rx="3" fill="#{right_series.color}" />
+    <text x="210" y="88" fill="#{Map.get(right_series, :text_fill, "#D9E1F2")}" font-family="system-ui, sans-serif" font-size="13">#{right_series.label}</text>
+    """
+
+    body =
+      rows
+      |> Enum.with_index()
+      |> Enum.map_join("\n", fn {row, index} ->
+        y = header_height + index * row_height
+        left_value = row[left_series.key]
+        right_value = row[right_series.key]
+        left_width = chart_width * (left_value / max_value)
+        right_width = chart_width * (right_value / max_value)
+        left_label = left_series.formatter.(left_value)
+        right_label = right_series.formatter.(right_value)
+
+        {left_value_x, left_anchor, left_fill} =
+          value_label_position(chart_left, left_width, left_label, speedup_guard_x)
+
+        {right_value_x, right_anchor, right_fill} =
+          value_label_position(chart_left, right_width, right_label, speedup_guard_x)
+
+        """
+        <text x="18" y="#{y + 24}" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="15">#{row.label}</text>
+        <text x="18" y="#{y + 44}" fill="#7F8796" font-family="system-ui, sans-serif" font-size="12">#{row.subtitle}</text>
+        <rect x="#{chart_left}" y="#{y}" width="#{Float.round(left_width, 2)}" height="16" rx="4" fill="#{left_series.color}" />
+        <text x="#{left_value_x}" y="#{y + 13}" text-anchor="#{left_anchor}" fill="#{left_fill}" font-family="system-ui, sans-serif" font-size="12">#{left_label}</text>
+        <rect x="#{chart_left}" y="#{y + 26}" width="#{Float.round(right_width, 2)}" height="16" rx="4" fill="#{right_series.color}" />
+        <text x="#{right_value_x}" y="#{y + 39}" text-anchor="#{right_anchor}" fill="#{right_fill}" font-family="system-ui, sans-serif" font-size="12">#{right_label}</text>
+        <text x="#{speedup_x}" y="#{y + 24}" fill="#D9E1F2" font-family="system-ui, sans-serif" font-size="13" text-anchor="end">#{Float.round(row.speedup, 2)}x</text>
+        <text x="#{speedup_label_x}" y="#{y + 42}" fill="#7F8796" font-family="system-ui, sans-serif" font-size="11" text-anchor="end">IREE speedup</text>
+        """
+      end)
+
+    svg = """
+    <svg xmlns="http://www.w3.org/2000/svg" width="#{width}" height="#{height}" viewBox="0 0 #{width} #{height}">
+      <rect width="#{width}" height="#{height}" rx="10" fill="#0E1118" />
+      <text x="18" y="36" fill="#F7FAFF" font-family="system-ui, sans-serif" font-size="22">#{title}</text>
+      <text x="18" y="62" fill="#7F8796" font-family="system-ui, sans-serif" font-size="14">#{subtitle}</text>
+      #{legend}
+      #{body}
+    </svg>
+    """
+
+    File.write!(path, svg)
+  end
+
   def load_tokenizers(repo, opts \\ []) do
     with {:ok, iree_tokenizer} <- IREETokenizer.from_pretrained(repo, iree_pretrained_opts(opts)),
          {:ok, tokenizers_tokenizer} <-
@@ -328,6 +399,17 @@ defmodule IREETokenizersBench.Support do
     """
   end
 
+  defp value_label_position(chart_left, bar_width, label, guard_x) do
+    estimated_label_width = max(String.length(label) * 7, 28)
+    outside_x = chart_left + bar_width + 10
+
+    if bar_width > estimated_label_width + 18 and outside_x + estimated_label_width > guard_x do
+      {chart_left + bar_width - 10, "end", "#F7FAFF"}
+    else
+      {outside_x, "start", "#A7B0C3"}
+    end
+  end
+
   defp timed_call(fun) do
     started_at = System.monotonic_time(:microsecond)
     _ = fun.()
@@ -355,7 +437,7 @@ defmodule IREETokenizersBench.Support do
         seconds: max((now - started_at) / 1_000_000, 0.000001)
       }
     else
-      {:ok, _} = fun.()
+      _ = fun.()
       do_run_for(fun, tokens_per_run, deadline, started_at, tokens + tokens_per_run, runs + 1)
     end
   end
