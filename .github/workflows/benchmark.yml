@@ -24,6 +24,9 @@ jobs:
       - name: Generate fixture comparison graphs
         run: mix run compare.exs
         working-directory: bench
+      - name: Generate sentencepiece comparison graphs
+        run: mix run sentencepiece_compare.exs
+        working-directory: bench
       - name: Generate model matrix graphs
         run: mix run model_matrix_graphs.exs
         working-directory: bench

@@ -1,12 +1,12 @@
 # IREE.Tokenizers
 
-Fast Hugging Face `tokenizer.json` and OpenAI `.tiktoken` bindings for Elixir backed by the IREE tokenizer runtime. I discovered [IREE Tokenizers](https://github.com/iree-org/iree-tokenizer-py) from the [ZML.ai blog](https://zml.ai/posts/iree-tokenizer/), a company I deeply admire!
+Fast Hugging Face `tokenizer.json`, OpenAI `.tiktoken`, and SentencePiece `.model` bindings for Elixir backed by the IREE tokenizer runtime. I discovered [IREE Tokenizers](https://github.com/iree-org/iree-tokenizer-py) from the [ZML.ai blog](https://zml.ai/posts/iree-tokenizer/), a company I deeply admire!
 
 
 ## Features
 
-- Load tokenizer definitions from a local `tokenizer.json` or `.tiktoken` buffer or file
-- Download and cache `tokenizer.json` or `.tiktoken` files from the Hugging Face Hub
+- Load tokenizer definitions from a local `tokenizer.json`, `.tiktoken`, or SentencePiece `.model` buffer or file
+- Download and cache `tokenizer.json`, `.tiktoken`, or SentencePiece `.model` files from the Hugging Face Hub
 - One-shot encode/decode and batched encode/decode
 - Token offsets and type IDs
 - Vocab lookup helpers
@@ -19,11 +19,11 @@ V1 is intentionally inference-only.
 - Supported:
   - Hugging Face `tokenizer.json`
   - OpenAI `.tiktoken`
+  - SentencePiece `.model`
   - BPE
   - WordPiece
   - Unigram
 - Deferred:
-  - SentencePiece `.model`
   - pair-sequence encode input
   - training and tokenizer mutation APIs
 
@@ -75,6 +75,18 @@ You can also load directly from the Hugging Face Hub:
 
 For custom `.tiktoken` repos or arbitrary in-memory buffers, pass `tiktoken_encoding:` explicitly when it cannot be inferred from the repo/model name or filename.
 
+For SentencePiece `.model` files, use `format: :sentencepiece_model` for raw buffers and pretrained loads. Local files ending in `.model` are inferred automatically:
+
+```elixir
+{:ok, tokenizer} =
+  IREE.Tokenizers.Tokenizer.from_file("spiece.model")
+
+{:ok, tokenizer} =
+  IREE.Tokenizers.Tokenizer.from_pretrained("google-t5/t5-small",
+    format: :sentencepiece_model
+  )
+```
+
 If you need authentication for gated/private repos:
 
 ```elixir
@@ -108,6 +120,11 @@ The local fixture comparison script now writes:
 - [`bench/results/tokenizers_compare.md`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare.md?raw=1)
 - [`bench/results/tokenizers_compare_encode.svg`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare_encode.svg?raw=1)
 - [`bench/results/tokenizers_compare_decode.svg`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/tokenizers_compare_decode.svg?raw=1)
+
+The SentencePiece-specific comparison script writes:
+- [`bench/results/sentencepiece_compare.md`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/sentencepiece_compare.md?raw=1)
+- [`bench/results/sentencepiece_compare_encode.svg`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/sentencepiece_compare_encode.svg?raw=1)
+- [`bench/results/sentencepiece_compare_decode.svg`](https://github.com/goodhamgupta/iree_tokenizers/blob/main/bench/results/sentencepiece_compare_decode.svg?raw=1)
 
 Encode throughput chart:
 
@@ -168,6 +185,12 @@ mix run compare.exs
 ```
 
 This generates the fixture comparison markdown and SVG charts in `bench/results/`.
+
+Generate the SentencePiece `.model` comparison charts:
+
+```bash
+mix run sentencepiece_compare.exs
+```
 
 Generate the multi-model latency/speedup graphs:
 

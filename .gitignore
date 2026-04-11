@@ -19,3 +19,6 @@
 !/bench/results/tokenizers_compare.md
 !/bench/results/tokenizers_compare_encode.svg
 !/bench/results/tokenizers_compare_decode.svg
+!/bench/results/sentencepiece_compare.md
+!/bench/results/sentencepiece_compare_encode.svg
+!/bench/results/sentencepiece_compare_decode.svg
