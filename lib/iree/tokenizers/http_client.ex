@@ -1,10 +1,29 @@
 defmodule IREE.Tokenizers.HTTPClient do
   @moduledoc """
   Minimal HTTP client used by `IREE.Tokenizers.Tokenizer.from_pretrained/2`.
+
+  This module follows the same lightweight callback shape used by
+  `elixir-nx/tokenizers`:
+
+      {:ok, %{status: integer(), headers: [{binary(), binary()}], body: binary()}}
+      {:error, term()}
+
+  It is public so callers can provide a compatible replacement through the
+  `:http_client` option.
   """
 
   @type response :: %{status: non_neg_integer(), headers: [{binary(), binary()}], body: binary()}
 
+  @doc """
+  Performs a single HTTP request.
+
+  Expected options:
+
+  - `:url` - absolute URL or path
+  - `:method` - `:get` or `:head`
+  - `:base_url` - optional base URL for relative paths
+  - `:headers` - optional request headers as `{binary(), binary()}` tuples
+  """
   @spec request(keyword()) :: {:ok, response()} | {:error, term()}
   def request(opts) do
     url = build_url(opts)

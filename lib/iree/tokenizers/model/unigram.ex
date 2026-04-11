@@ -1,16 +1,25 @@
 defmodule IREE.Tokenizers.Model.Unigram do
   @moduledoc """
-  Unigram model spec compatible with `IREE.Tokenizers.Tokenizer.init/1`.
+  Unigram model specification compatible with `IREE.Tokenizers.Tokenizer.init/1`.
+
+  This model shape is also used internally when SentencePiece Unigram
+  tokenizers are translated into the IREE-backed runtime format.
   """
 
   alias IREE.Tokenizers.Model
 
+  @typedoc """
+  Options for Unigram model construction.
+  """
   @type options :: [
           byte_fallback: boolean(),
           unk_id: integer()
         ]
 
   @spec init([{String.t(), number()}], options()) :: {:ok, Model.t()}
+  @doc """
+  Builds a Unigram model specification from an in-memory scored vocabulary.
+  """
   def init(vocab, options \\ []) when is_list(vocab) do
     opts =
       Keyword.validate!(options,
@@ -35,5 +44,8 @@ defmodule IREE.Tokenizers.Model.Unigram do
   end
 
   @spec empty() :: {:ok, Model.t()}
+  @doc """
+  Returns an empty Unigram model specification.
+  """
   def empty, do: init([])
 end
