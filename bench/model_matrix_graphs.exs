@@ -110,16 +110,21 @@ defmodule IREETokenizersBench.ModelMatrix do
   end
 
   defp load_model(model) do
-    Enum.find_value(model.repos, {:error, "no usable tokenizer.json found"}, fn repo ->
+    Enum.reduce_while(model.repos, {:error, "no candidate repos configured"}, fn repo, _acc ->
       case Support.load_tokenizers(repo, Support.pretrained_opts()) do
         {:ok, iree_tokenizer, tokenizers_tokenizer} ->
-          {:ok, repo, iree_tokenizer, tokenizers_tokenizer}
+          {:halt, {:ok, repo, iree_tokenizer, tokenizers_tokenizer}}
 
-        {:error, _reason} ->
-          nil
+        {:error, reason} ->
+          {:cont, {:error, "#{repo}: #{format_reason(reason)}"}}
       end
     end)
   end
+
+  defp format_reason({kind, message}) when is_atom(kind) and is_binary(message),
+    do: "#{kind}: #{message}"
+
+  defp format_reason(reason), do: inspect(reason)
 
   defp benchmark_model(label, actual_repo, iree_tokenizer, tokenizers_tokenizer, corpus) do
     {:ok, comparison} =
@@ -167,10 +172,9 @@ defmodule IREETokenizersBench.ModelMatrix do
   end
 
   defp render_summary(rows, skipped) do
-    table_header = """
-    | Model | Repo used | Tokenizers package (ms) | IREE oneshot / stream (ms) | Speedup |
-    | --- | --- | ---: | ---: | --- |
-    """
+    table_header =
+      "| Model | Repo used | Tokenizers package (ms) | IREE oneshot / stream (ms) | Speedup |\n" <>
+        "| --- | --- | ---: | ---: | --- |"
 
     table_rows =
       rows
@@ -224,8 +228,7 @@ defmodule IREETokenizersBench.ModelMatrix do
 
     #{table_header}
     #{table_rows}
-    #{notes_section}
-    #{skipped_section}
+    #{notes_section}#{skipped_section}
     """
   end
 
