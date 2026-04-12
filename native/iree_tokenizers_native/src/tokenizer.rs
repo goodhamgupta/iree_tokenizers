@@ -163,7 +163,10 @@ pub fn tokenizer_encode_batch(
     let transform_size = ffi::transform_buffer_oneshot_size(max_len);
     let mut state_storage = vec![0u8; state_size];
     let mut transform_buffer = vec![0u8; transform_size];
-    let flags = encode_flags(options.add_special_tokens, options.track_offsets);
+    // Always request offsets internally so `encoding_metadata` can substitute
+    // source text for UNK ids; only surface them to Elixir when the caller
+    // asked for them. See the matching comment in `encode_impl`.
+    let flags = encode_flags(options.add_special_tokens, true);
 
     let mut capacities: Vec<usize> = texts.iter().map(|item| item.len() / 2 + 16).collect();
     let mut ids_bufs: Vec<Vec<i32>> = capacities.iter().map(|&cap| vec![0; cap]).collect();
@@ -182,11 +185,7 @@ pub fn tokenizer_encode_batch(
                 output: ffi::iree_tokenizer_token_output_t {
                     capacity: capacities[index],
                     token_ids: ids_bufs[index].as_mut_ptr(),
-                    token_offsets: if options.track_offsets {
-                        offsets_bufs[index].as_mut_ptr()
-                    } else {
-                        std::ptr::null_mut()
-                    },
+                    token_offsets: offsets_bufs[index].as_mut_ptr(),
                     type_ids: type_ids_bufs[index].as_mut_ptr(),
                 },
                 out_token_count: 0,
@@ -219,14 +218,45 @@ pub fn tokenizer_encode_batch(
 
         check_status(status)?;
 
+        // Silent-truncation guard: see the comment in `encode_impl`. If any
+        // item's output exactly fills its buffer and we still have headroom
+        // below the worst-case upper bound, grow those items and retry.
+        let suspected_truncation = items.iter().enumerate().any(|(index, item)| {
+            item.out_token_count == capacities[index]
+                && capacities[index] <= texts[index].len() + 16
+        });
+
+        if suspected_truncation {
+            for (index, text) in texts.iter().enumerate() {
+                if items[index].out_token_count == capacities[index]
+                    && capacities[index] <= text.len() + 16
+                {
+                    capacities[index] = capacities[index].max(text.len() + 64) * 2;
+                    ids_bufs[index] = vec![0; capacities[index]];
+                    type_ids_bufs[index] = vec![0; capacities[index]];
+                    offsets_bufs[index] =
+                        vec![ffi::iree_tokenizer_offset_t { start: 0, end: 0 }; capacities[index]];
+                }
+            }
+            continue;
+        }
+
         let encodings = items
             .into_iter()
             .enumerate()
             .map(|(index, item)| {
                 ids_bufs[index].truncate(item.out_token_count);
                 type_ids_bufs[index].truncate(item.out_token_count);
-                let offsets = if options.track_offsets {
-                    offsets_bufs[index].truncate(item.out_token_count);
+                offsets_bufs[index].truncate(item.out_token_count);
+
+                let (special_tokens_mask, tokens) = encoding_metadata(
+                    &tokenizer.resource,
+                    &ids_bufs[index],
+                    texts[index].as_slice(),
+                    &offsets_bufs[index],
+                );
+
+                let returned_offsets = if options.track_offsets {
                     Some(
                         offsets_bufs[index]
                             .iter()
@@ -237,13 +267,10 @@ pub fn tokenizer_encode_batch(
                     None
                 };
 
-                let (special_tokens_mask, tokens) =
-                    encoding_metadata(&tokenizer.resource, &ids_bufs[index]);
-
                 Encoding {
                     ids: std::mem::take(&mut ids_bufs[index]),
                     type_ids: std::mem::take(&mut type_ids_bufs[index]),
-                    offsets,
+                    offsets: returned_offsets,
                     attention_mask: vec![1; item.out_token_count],
                     special_tokens_mask,
                     tokens,
@@ -475,7 +502,11 @@ pub fn encode_impl(
     track_offsets: bool,
 ) -> Result<Encoding> {
     let mut capacity = text.len() / 2 + 16;
-    let flags = encode_flags(add_special_tokens, track_offsets);
+    // We always tell IREE to populate token offsets even when the caller
+    // did not request them, because `encoding_metadata` needs them to map
+    // UNK token positions back to their source text slice. The offsets are
+    // only surfaced to Elixir when `track_offsets` is true.
+    let flags = encode_flags(add_special_tokens, true);
 
     loop {
         let mut ids = vec![0i32; capacity];
@@ -491,11 +522,7 @@ pub fn encode_impl(
                 ffi::iree_tokenizer_token_output_t {
                     capacity,
                     token_ids: ids.as_mut_ptr(),
-                    token_offsets: if track_offsets {
-                        offsets.as_mut_ptr()
-                    } else {
-                        std::ptr::null_mut()
-                    },
+                    token_offsets: offsets.as_mut_ptr(),
                     type_ids: type_ids.as_mut_ptr(),
                 },
                 ffi::system_allocator(),
@@ -510,11 +537,26 @@ pub fn encode_impl(
         }
 
         check_status(status)?;
+
+        // The underlying IREE tokenizer does not always return
+        // RESOURCE_EXHAUSTED when the output buffer fills exactly: for
+        // small-vocab / byte-fallback heavy inputs it stops at `capacity`
+        // silently, leaving us with a prefix. Treat a full buffer as
+        // suspected truncation and grow until we have headroom above the
+        // worst-case upper bound of one token per input byte plus slack for
+        // special tokens.
+        if token_count == capacity && capacity <= text.len() + 16 {
+            capacity = capacity.max(text.len() + 64) * 2;
+            continue;
+        }
+
         ids.truncate(token_count);
         type_ids.truncate(token_count);
+        offsets.truncate(token_count);
 
-        let offsets = if track_offsets {
-            offsets.truncate(token_count);
+        let (special_tokens_mask, tokens) = encoding_metadata(tokenizer, &ids, text, &offsets);
+
+        let returned_offsets = if track_offsets {
             Some(
                 offsets
                     .into_iter()
@@ -525,12 +567,10 @@ pub fn encode_impl(
             None
         };
 
-        let (special_tokens_mask, tokens) = encoding_metadata(tokenizer, &ids);
-
         return Ok(Encoding {
             ids,
             type_ids,
-            offsets,
+            offsets: returned_offsets,
             attention_mask: vec![1; token_count],
             special_tokens_mask,
             tokens,
@@ -666,21 +706,137 @@ pub(crate) fn invalid_argument(message: impl Into<String>) -> TokenizerError {
     TokenizerError::new(ErrorKind::InvalidArgument, message)
 }
 
-fn encoding_metadata(tokenizer: &TokenizerResource, ids: &[i32]) -> (Vec<u8>, Vec<String>) {
+// Metaspace marker (Unicode U+2581 LOWER ONE EIGHTH BLOCK) used by
+// SentencePiece-style tokenizers (Unigram + SentencePiece BPE) to mark word
+// starts inside vocab token texts. UTF-8 encoding is 3 bytes.
+const METASPACE_MARKER: &[u8] = "\u{2581}".as_bytes();
+
+fn encoding_metadata(
+    tokenizer: &TokenizerResource,
+    ids: &[i32],
+    text: &[u8],
+    offsets: &[ffi::iree_tokenizer_offset_t],
+) -> (Vec<u8>, Vec<String>) {
     let vocab = unsafe { ffi::iree_tokenizer_vocab(tokenizer.ptr) };
+    let unk_id = unsafe { ffi::iree_tokenizer_vocab_special_ids(vocab) }.unk;
+
+    // Pre-compute vocab token text for every id; we need it both for the
+    // returned `tokens` field and for tracking metaspace overhead.
+    let vocab_texts: Vec<String> = ids.iter().map(|&id| vocab_token_text(vocab, id)).collect();
+
+    // The native IREE tokenizer (in this vendored bundle) writes per-token
+    // offsets in the *transform buffer* — i.e. the post-normalizer string
+    // with metaspace `▁` markers injected — not in the original input. To
+    // match elixir-nx/tokenizers (which surfaces UNK substring text in the
+    // `tokens` field for vocabularies without byte_fallback), we need to
+    // map each UNK token's transform-buffer offset back to a slice of the
+    // original input. We do that by walking the token sequence and
+    // accumulating the byte difference between the transform buffer and
+    // the original input that has been introduced by metaspace prefixes
+    // up to (but not including) each token. Each metaspace prefix adds 3
+    // bytes of `▁` to the transform; if the metaspace is at the start of
+    // the input it consumes no source bytes (net +3), otherwise it
+    // consumes one source space byte (net +2).
+    let metaspace_offsets = compute_metaspace_overheads(&vocab_texts, offsets);
+
     let mut special_tokens_mask = Vec::with_capacity(ids.len());
     let mut tokens = Vec::with_capacity(ids.len());
 
-    for &id in ids {
+    for (index, &id) in ids.iter().enumerate() {
         let attrs = unsafe { ffi::iree_tokenizer_vocab_token_attrs(vocab, id) };
         special_tokens_mask.push(u8::from(
             (attrs & ffi::IREE_TOKENIZER_TOKEN_ATTR_SPECIAL) != 0,
         ));
-        let view = unsafe { ffi::iree_tokenizer_vocab_token_text(vocab, id) };
-        tokens.push(string_view_to_string(view).unwrap_or_default());
+
+        // For the per-position `tokens` field: when the model has a UNK
+        // token and the current id is UNK, return the source text slice
+        // that produced it instead of the literal `<unk>` vocab string.
+        // This makes encodings human-readable for vocabularies that do
+        // not have byte-fallback coverage (e.g. T5 SentencePiece Unigram)
+        // and matches elixir-nx/tokenizers byte-for-byte.
+        let token = if unk_id >= 0 && id == unk_id {
+            unk_source_slice(
+                text,
+                offsets.get(index),
+                metaspace_offsets.get(index).copied(),
+            )
+            .unwrap_or_else(|| vocab_texts[index].clone())
+        } else {
+            vocab_texts[index].clone()
+        };
+
+        tokens.push(token);
     }
 
     (special_tokens_mask, tokens)
+}
+
+fn vocab_token_text(vocab: *const ffi::iree_tokenizer_vocab_t, id: i32) -> String {
+    let view = unsafe { ffi::iree_tokenizer_vocab_token_text(vocab, id) };
+    string_view_to_string(view).unwrap_or_default()
+}
+
+// For each token, returns the cumulative number of bytes the transform
+// buffer has grown by relative to the original input *before* this token
+// starts. Used to translate transform-buffer offsets back to original
+// offsets. Only meaningful for SentencePiece-style metaspace tokenizers;
+// for tokenizers that do not use the metaspace marker the result is all
+// zeros, which leaves transform-buffer offsets unchanged.
+fn compute_metaspace_overheads(
+    vocab_texts: &[String],
+    offsets: &[ffi::iree_tokenizer_offset_t],
+) -> Vec<usize> {
+    let mut result = Vec::with_capacity(vocab_texts.len());
+    let mut overhead: usize = 0;
+    let mut seen_metaspace = false;
+
+    for (index, vocab_text) in vocab_texts.iter().enumerate() {
+        result.push(overhead);
+
+        if vocab_text.as_bytes().starts_with(METASPACE_MARKER) {
+            // First metaspace token whose transform_start is at the very
+            // beginning of the buffer corresponds to "start of input" (no
+            // source space was consumed): the `▁` is purely additive, so
+            // the buffer grew by 3 bytes. Every other metaspace replaces a
+            // source space (1 byte) with a `▁` (3 bytes), so the buffer
+            // grows by 2 bytes per occurrence.
+            let at_input_start = !seen_metaspace
+                && offsets
+                    .get(index)
+                    .map(|offset| offset.start == 0)
+                    .unwrap_or(false);
+
+            if at_input_start {
+                overhead += METASPACE_MARKER.len();
+            } else {
+                overhead += METASPACE_MARKER.len() - 1;
+            }
+            seen_metaspace = true;
+        }
+    }
+
+    result
+}
+
+fn unk_source_slice(
+    text: &[u8],
+    offset: Option<&ffi::iree_tokenizer_offset_t>,
+    metaspace_overhead: Option<usize>,
+) -> Option<String> {
+    let offset = offset?;
+    let overhead = metaspace_overhead?;
+
+    if offset.end <= offset.start {
+        return None;
+    }
+
+    let original_start = offset.start.checked_sub(overhead)?;
+    let original_end = offset.end.checked_sub(overhead)?;
+    if original_start >= original_end || original_end > text.len() {
+        return None;
+    }
+
+    Some(String::from_utf8_lossy(&text[original_start..original_end]).into_owned())
 }
 
 #[derive(Clone, Copy, Default)]
