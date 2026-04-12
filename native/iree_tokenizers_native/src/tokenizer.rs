@@ -755,8 +755,12 @@ fn encoding_metadata(
         // not have byte-fallback coverage (e.g. T5 SentencePiece Unigram)
         // and matches elixir-nx/tokenizers byte-for-byte.
         let token = if unk_id >= 0 && id == unk_id {
-            unk_source_slice(text, offsets.get(index), metaspace_offsets.get(index).copied())
-                .unwrap_or_else(|| vocab_texts[index].clone())
+            unk_source_slice(
+                text,
+                offsets.get(index),
+                metaspace_offsets.get(index).copied(),
+            )
+            .unwrap_or_else(|| vocab_texts[index].clone())
         } else {
             vocab_texts[index].clone()
         };
