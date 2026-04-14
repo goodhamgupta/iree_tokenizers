@@ -220,6 +220,14 @@ defmodule IREE.Tokenizers.Tokenizer do
   - `:token` - optional Hugging Face token for gated/private repos
   - `:filename` - optional explicit remote filename override
   - `:format` - serialized tokenizer format
+  - `:subfolder` - optional subdirectory within the repository that holds
+    the tokenizer assets. Diffusers-style repositories such as
+    `stabilityai/stable-diffusion-xl-base-1.0` ship their tokenizer under
+    `tokenizer/tokenizer.json` (and a second under `tokenizer_2/`). When
+    `:subfolder` is omitted, `from_pretrained/2` tries the repository root,
+    `tokenizer/`, `tokenizer_2/`, and `text_encoder/` in order and returns
+    the first successful download. Pass an explicit value (or `""` for the
+    root) to disable the fallback walk.
   - `:tiktoken_encoding` - optional explicit tiktoken encoding override
   """
   @spec from_pretrained(binary(), keyword()) :: result(t())
@@ -636,6 +644,7 @@ defmodule IREE.Tokenizers.Tokenizer do
         token: nil,
         format: :huggingface_json,
         filename: nil,
+        subfolder: nil,
         tiktoken_encoding: nil
       )
 
@@ -764,22 +773,22 @@ defmodule IREE.Tokenizers.Tokenizer do
     end
   end
 
+  # Well-known subfolder prefixes to try when a repo does not carry its
+  # tokenizer assets at the repo root. Diffusers pipelines (FLUX, SDXL,
+  # Stable Diffusion, Kokoro-TTS, …) ship every sub-component under its own
+  # subdirectory, and HF's reference `tokenizers` package walks the same set.
+  # `""` represents "try the repo root first".
+  @huggingface_subfolder_fallbacks ["", "tokenizer", "tokenizer_2", "text_encoder"]
+
   defp pretrained_sources(repo_id, opts) do
     load_opts = Keyword.take(opts, [:format, :tiktoken_encoding])
 
     case opts[:format] do
       :huggingface_json ->
-        url = "/#{repo_id}/resolve/#{opts[:revision]}/#{opts[:filename]}"
-
         {:ok,
-         [
-           %{
-             base_url: @huggingface_base_url,
-             url: url,
-             cache_key: @huggingface_base_url <> url,
-             load_opts: load_opts
-           }
-         ]}
+         repo_id
+         |> huggingface_relative_paths(opts[:filename], opts[:revision], opts[:subfolder])
+         |> Enum.map(&huggingface_source(&1, load_opts))}
 
       :tiktoken ->
         if builtin_openai_tiktoken_source?(repo_id, opts[:filename]) do
@@ -796,7 +805,8 @@ defmodule IREE.Tokenizers.Tokenizer do
              }
            ]}
         else
-          url = "/#{repo_id}/resolve/#{opts[:revision]}/#{opts[:filename]}"
+          filename = join_subfolder(opts[:subfolder], opts[:filename])
+          url = "/#{repo_id}/resolve/#{opts[:revision]}/#{filename}"
 
           {:ok,
            [
@@ -810,15 +820,23 @@ defmodule IREE.Tokenizers.Tokenizer do
         end
 
       :sentencepiece_model ->
-        filenames =
+        subfolders =
+          case opts[:subfolder] do
+            nil -> [""]
+            explicit -> [explicit]
+          end
+
+        base_filenames =
           case opts[:filename] do
             nil -> ["tokenizer.model", "spiece.model"]
             filename -> [filename]
           end
 
         {:ok,
-         Enum.map(filenames, fn filename ->
-           url = "/#{repo_id}/resolve/#{opts[:revision]}/#{filename}"
+         for subfolder <- subfolders,
+             filename <- base_filenames do
+           full = join_subfolder(subfolder, filename)
+           url = "/#{repo_id}/resolve/#{opts[:revision]}/#{full}"
 
            %{
              base_url: @huggingface_base_url,
@@ -826,8 +844,44 @@ defmodule IREE.Tokenizers.Tokenizer do
              cache_key: @huggingface_base_url <> url,
              load_opts: load_opts
            }
-         end)}
+         end}
     end
+  end
+
+  defp huggingface_relative_paths(repo_id, filename, revision, nil) do
+    # No explicit subfolder: walk the known fallbacks. Each candidate is
+    # returned as a `{repo_id, revision, relative_path}` tuple that we
+    # later fold into a URL so the `not_found -> next source` path in
+    # `do_fetch_pretrained_from_sources/3` takes over automatically.
+    Enum.map(@huggingface_subfolder_fallbacks, fn subfolder ->
+      {repo_id, revision, join_subfolder(subfolder, filename)}
+    end)
+  end
+
+  defp huggingface_relative_paths(repo_id, filename, revision, subfolder)
+       when is_binary(subfolder) do
+    [{repo_id, revision, join_subfolder(subfolder, filename)}]
+  end
+
+  defp huggingface_source({repo_id, revision, relative_path}, load_opts) do
+    url = "/#{repo_id}/resolve/#{revision}/#{relative_path}"
+
+    %{
+      base_url: @huggingface_base_url,
+      url: url,
+      cache_key: @huggingface_base_url <> url,
+      load_opts: load_opts
+    }
+  end
+
+  defp join_subfolder(nil, filename), do: filename
+  defp join_subfolder("", filename), do: filename
+
+  defp join_subfolder(subfolder, filename) when is_binary(subfolder) do
+    subfolder
+    |> String.trim_leading("/")
+    |> String.trim_trailing("/")
+    |> Kernel.<>("/" <> filename)
   end
 
   defp fetch_pretrained_from_sources(sources, opts) do
