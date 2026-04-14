@@ -125,8 +125,24 @@ impl EncodeStreamState {
                 }
 
                 if produced == 0 {
+                    // The vendored IREE tokenizer runtime returned
+                    // `has_pending=true` but emitted zero tokens on finalize.
+                    // We cannot make forward progress from the Rust layer
+                    // without double-encoding the trailing bytes, so surface
+                    // a clear, actionable error with a workaround hint and
+                    // let the caller fall back to a one-shot
+                    // `Tokenizer.encode/3` on the full input.
+                    //
+                    // Known upstream trigger: Unigram / SentencePiece
+                    // tokenizers such as google-t5/t5-small finalize into
+                    // this state on long inputs. See
+                    // docs/UPSTREAM_BUGS.md for repro details.
                     return Err(invalid_argument(
-                        "encode stream finalize made no progress while pending data remained",
+                        "encode stream finalize made no progress while pending \
+                         data remained; this is an upstream tokenizer runtime \
+                         limitation for some Unigram/SentencePiece models \
+                         (see docs/UPSTREAM_BUGS.md). Fall back to \
+                         `IREE.Tokenizers.Tokenizer.encode/3` on the full input.",
                     ));
                 }
 
