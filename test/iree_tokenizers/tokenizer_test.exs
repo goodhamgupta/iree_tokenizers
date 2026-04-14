@@ -25,6 +25,39 @@ defmodule IREETokenizers.TokenizerTest do
     end
   end
 
+  defmodule RoutedMockHTTPClient do
+    @moduledoc false
+    # A URL-routed mock that returns a 404 (HEAD + GET) for any path not
+    # explicitly registered, and the registered response otherwise. The
+    # routing table is a list of `{url_pattern, response}` pairs; the first
+    # pattern whose `url` is a suffix match wins, which keeps route strings
+    # short (`"/tokenizer/tokenizer.json"`) while still matching the full
+    # `/<repo>/resolve/<rev>/<path>` URL the loader sends.
+    def request(opts) do
+      agent = Keyword.fetch!(opts, :agent)
+      url = Keyword.fetch!(opts, :url)
+      method = Keyword.fetch!(opts, :method)
+
+      Agent.get_and_update(agent, fn state ->
+        state =
+          Map.update(state, :requests, [{method, url}], &[{method, url} | &1])
+
+        route =
+          Enum.find(state.routes, fn {pattern, _response} ->
+            String.ends_with?(url, pattern)
+          end)
+
+        response =
+          case route do
+            {_pattern, response} -> {:ok, response}
+            nil -> {:ok, %{status: 404, headers: [], body: "not found"}}
+          end
+
+        {response, state}
+      end)
+    end
+  end
+
   setup do
     {:ok, agent} =
       Agent.start_link(fn ->
@@ -478,6 +511,143 @@ defmodule IREETokenizers.TokenizerTest do
                http_client: {MockHTTPClient, agent: agent},
                token: "secret"
              )
+  end
+
+  test "from_pretrained falls back to a diffusers-style tokenizer subfolder" do
+    # Simulates `stabilityai/stable-diffusion-xl-base-1.0`, which does not
+    # carry a tokenizer.json at the repo root. The loader must probe the
+    # root first, fail with 404, then retry under `tokenizer/`.
+    body = File.read!(fixture_path("bpe_bytelevel_minimal.json"))
+
+    {:ok, agent} =
+      Agent.start_link(fn ->
+        %{
+          requests: [],
+          routes: [
+            {"/tokenizer/tokenizer.json",
+             %{status: 200, headers: [{"etag", "etag-sub"}], body: body}}
+          ]
+        }
+      end)
+
+    cache_dir = fresh_cache_dir()
+
+    assert {:ok, tokenizer} =
+             Tokenizer.from_pretrained("stabilityai/stable-diffusion-xl-base-1.0",
+               cache_dir: cache_dir,
+               http_client: {RoutedMockHTTPClient, agent: agent}
+             )
+
+    assert Tokenizer.vocab_size(tokenizer) == 112
+
+    requests =
+      Agent.get(agent, fn state -> Enum.reverse(state.requests) end)
+
+    # Expect at least one probe at the root, then a successful probe/get
+    # pair under the tokenizer/ subfolder.
+    assert Enum.any?(requests, fn {_m, url} ->
+             String.ends_with?(url, "/resolve/main/tokenizer.json")
+           end)
+
+    assert Enum.any?(requests, fn {_m, url} ->
+             String.ends_with?(url, "/tokenizer/tokenizer.json")
+           end)
+  end
+
+  test "from_pretrained falls back through the tokenizer_2 subfolder" do
+    # Simulates an SDXL text-encoder-2 style repo where only `tokenizer_2/`
+    # exists: the root, `tokenizer/`, and `tokenizer_2/` must all be probed
+    # and the last one wins.
+    body = File.read!(fixture_path("bpe_bytelevel_minimal.json"))
+
+    {:ok, agent} =
+      Agent.start_link(fn ->
+        %{
+          requests: [],
+          routes: [
+            {"/tokenizer_2/tokenizer.json",
+             %{status: 200, headers: [{"etag", "etag-sub2"}], body: body}}
+          ]
+        }
+      end)
+
+    cache_dir = fresh_cache_dir()
+
+    assert {:ok, tokenizer} =
+             Tokenizer.from_pretrained("owner/sdxl-like",
+               cache_dir: cache_dir,
+               http_client: {RoutedMockHTTPClient, agent: agent}
+             )
+
+    assert Tokenizer.vocab_size(tokenizer) == 112
+  end
+
+  test "from_pretrained honors an explicit :subfolder and skips the fallback walk" do
+    body = File.read!(fixture_path("bpe_bytelevel_minimal.json"))
+
+    {:ok, agent} =
+      Agent.start_link(fn ->
+        %{
+          requests: [],
+          routes: [
+            # Only the explicit subfolder is served; root and tokenizer_2
+            # intentionally 404 so we can assert we did not probe them.
+            {"/text_encoder/tokenizer.json",
+             %{status: 200, headers: [{"etag", "etag-sub"}], body: body}}
+          ]
+        }
+      end)
+
+    cache_dir = fresh_cache_dir()
+
+    assert {:ok, tokenizer} =
+             Tokenizer.from_pretrained("owner/explicit-sub",
+               cache_dir: cache_dir,
+               http_client: {RoutedMockHTTPClient, agent: agent},
+               subfolder: "text_encoder"
+             )
+
+    assert Tokenizer.vocab_size(tokenizer) == 112
+
+    requests =
+      Agent.get(agent, fn state -> Enum.reverse(state.requests) end)
+
+    # With an explicit subfolder we should see exactly the text_encoder
+    # URL — no attempts at the bare repo root or at tokenizer/.
+    refute Enum.any?(requests, fn {_m, url} ->
+             String.ends_with?(url, "/resolve/main/tokenizer.json")
+           end)
+
+    refute Enum.any?(requests, fn {_m, url} ->
+             String.ends_with?(url, "/tokenizer/tokenizer.json")
+           end)
+
+    assert Enum.any?(requests, fn {_m, url} ->
+             String.ends_with?(url, "/text_encoder/tokenizer.json")
+           end)
+  end
+
+  test "from_pretrained still returns not_found when every subfolder 404s" do
+    {:ok, agent} =
+      Agent.start_link(fn ->
+        %{requests: [], routes: []}
+      end)
+
+    cache_dir = fresh_cache_dir()
+
+    assert {:error, {:not_found, "resource not found"}} =
+             Tokenizer.from_pretrained("owner/nowhere",
+               cache_dir: cache_dir,
+               http_client: {RoutedMockHTTPClient, agent: agent}
+             )
+  end
+
+  defp fresh_cache_dir do
+    cache_dir =
+      Path.join(System.tmp_dir!(), "iree-tokenizers-#{System.unique_integer([:positive])}")
+
+    File.rm_rf!(cache_dir)
+    cache_dir
   end
 
   defp load_fixture!(name) do
