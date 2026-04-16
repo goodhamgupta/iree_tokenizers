@@ -1,0 +1,28 @@
+{
+  "model": {
+    "type": "BPE",
+    "vocab": {
+      "ð": 0,
+      "Ł": 1,
+      "ļ": 2,
+      "Ģ": 3,
+      "ðŁ": 4,
+      "ļĢ": 5
+    },
+    "merges": [
+      "ð Ł",
+      "ļ Ģ"
+    ]
+  },
+  "pre_tokenizer": {
+    "type": "ByteLevel",
+    "add_prefix_space": false,
+    "trim_offsets": false,
+    "use_regex": true
+  },
+  "decoder": {
+    "type": "ByteLevel",
+    "add_prefix_space": false,
+    "trim_offsets": false
+  }
+}

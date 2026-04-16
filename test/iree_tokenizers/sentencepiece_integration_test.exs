@@ -138,6 +138,21 @@ defmodule IREETokenizers.SentencePieceIntegrationTest do
     end)
   end
 
+  test "matches official tokenizers on phi-3 punctuation and long-input regressions" do
+    repo = "microsoft/Phi-3-mini-4k-instruct"
+
+    inputs = [
+      " !!! ??? ... ,,, ;;; :::",
+      String.duplicate("the quick brown fox jumps over the lazy dog. ", 33),
+      String.duplicate("Tokenization 日本語 🚀 déjà vu naïve café.\n\t", 32)
+    ]
+
+    {:ok, iree_tokenizer} = IREETokenizer.from_pretrained(repo)
+    {:ok, hf_tokenizer} = HFTokenizer.from_pretrained(repo)
+
+    assert_full_encoding_parity(iree_tokenizer, hf_tokenizer, inputs)
+  end
+
   defp assert_full_encoding_parity(iree_tokenizer, hf_tokenizer, inputs) do
     Enum.each(inputs, fn text ->
       {:ok, iree_encoding} = IREETokenizer.encode(iree_tokenizer, text, add_special_tokens: false)

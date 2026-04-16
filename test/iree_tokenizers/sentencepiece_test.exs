@@ -1,7 +1,7 @@
 defmodule IREETokenizers.SentencePieceTest do
   use ExUnit.Case, async: false
 
-  alias IREE.Tokenizers.Tokenizer
+  alias IREE.Tokenizers.{EncodeStream, Tokenizer}
 
   defmodule MockHTTPClient do
     def request(opts) do
@@ -71,6 +71,21 @@ defmodule IREETokenizers.SentencePieceTest do
 
     assert {:ok, "I saw a girl with a telescope."} =
              Tokenizer.decode(tokenizer, roundtrip.ids, skip_special_tokens: false)
+  end
+
+  test "encode stream buffers unigram sentencepiece input until finalize" do
+    {:ok, tokenizer} = Tokenizer.from_file(fixture_path("test_sentencepiece.model"))
+
+    {:ok, encoding} =
+      Tokenizer.encode(tokenizer, "translate English to German: The house is wonderful.",
+        add_special_tokens: false
+      )
+
+    assert {:ok, stream} = EncodeStream.new(tokenizer, add_special_tokens: false)
+    assert {:ok, []} = EncodeStream.feed(stream, "translate English to ")
+    assert {:ok, []} = EncodeStream.feed(stream, "German: The house is wonderful.")
+    assert {:ok, suffix_ids} = EncodeStream.finalize(stream)
+    assert suffix_ids == encoding.ids
   end
 
   test "from_pretrained falls back from tokenizer.model to spiece.model", %{agent: agent} do

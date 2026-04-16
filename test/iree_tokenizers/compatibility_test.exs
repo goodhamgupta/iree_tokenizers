@@ -50,6 +50,45 @@ defmodule IREETokenizers.CompatibilityTest do
     assert iree_text == hf_text
   end
 
+  test "byte-level decode preserves multibyte UTF-8 split across merged tokens" do
+    fixture = fixture_path("bytelevel_utf8_split.json")
+    {:ok, iree_tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, hf_tokenizer} = HFTokenizer.from_file(fixture)
+
+    {:ok, iree_encoding} = Tokenizer.encode(iree_tokenizer, "🚀", add_special_tokens: false)
+    {:ok, hf_encoding} = HFTokenizer.encode(hf_tokenizer, "🚀", add_special_tokens: false)
+
+    assert Encoding.get_ids(iree_encoding) == HFEncoding.get_ids(hf_encoding)
+
+    assert {:ok, iree_text} =
+             Tokenizer.decode(iree_tokenizer, Encoding.get_ids(iree_encoding),
+               skip_special_tokens: false
+             )
+
+    assert {:ok, hf_text} =
+             HFTokenizer.decode(hf_tokenizer, HFEncoding.get_ids(hf_encoding),
+               skip_special_tokens: false
+             )
+
+    assert iree_text == "🚀"
+    assert hf_text == "🚀"
+  end
+
+  test "encode stream preserves one-shot ids for null-pretokenizer bpe tokenizers" do
+    fixture = fixture_path("sentencepiece_stream_split_minimal.json")
+    {:ok, tokenizer} = Tokenizer.from_file(fixture)
+
+    {:ok, iree_encoding} = Tokenizer.encode(tokenizer, "hello", add_special_tokens: false)
+
+    {:ok, stream} = EncodeStream.new(tokenizer, add_special_tokens: false)
+
+    assert {:ok, []} = EncodeStream.feed(stream, "h")
+    assert {:ok, []} = EncodeStream.feed(stream, "ello")
+    assert {:ok, suffix_ids} = EncodeStream.finalize(stream)
+
+    assert suffix_ids == Encoding.get_ids(iree_encoding)
+  end
+
   describe "encode capacity / silent-truncation regression" do
     # The minimal ByteLevel BPE fixture is the worst case for the IREE NIF's
     # output buffer heuristic: every input byte becomes its own token, so the

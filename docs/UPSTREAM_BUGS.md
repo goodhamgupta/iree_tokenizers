@@ -1,13 +1,25 @@
 # Upstream IREE Tokenizer Bugs
 
-This document tracks bugs that the `IREE.Tokenizers` Elixir parity harness
-(`bench/validate_parity.exs`) surfaced in the vendored IREE tokenizer C
-runtime. They are **not** fixable in this package — the vendored bundle at
-`native/iree_tokenizers_native/vendor/iree_tokenizer_src/` is refreshed from
-upstream IREE via `scripts/update_iree_bundle.sh`, so any local patch is
-clobbered on refresh. The right fix lives in the upstream
-[`iree-org/iree-tokenizer-py`](https://github.com/iree-org/iree-tokenizer-py)
-repository.
+This document tracks parity failures originally surfaced by the
+`IREE.Tokenizers` Elixir parity harness (`bench/validate_parity.exs`) against
+our vendored IREE tokenizer snapshot.
+
+Update on this branch:
+- Fixed locally in this package:
+  - byte-level BPE decode corruption for emoji / CJK-adjacent sequences
+  - SentencePiece / Llama-family `EncodeStream` chunk-boundary divergence
+  - Unigram / SentencePiece `EncodeStream.finalize/1` no-progress failure
+  - Phi-3 repeated punctuation and long-input BPE encode divergences
+- Still unresolved here (documented below and/or in the parity report):
+  - `gpt2` batch encode deadlock
+  - BERT control-character whitespace classification mismatch
+  - BERT batch-path emoji mismatch
+  - Phi-3 `special_token_literal` added-token parity mismatch
+  - T5 batch encode mismatches on long inputs
+  - tokenizer.json `padding.max_length` is still not auto-applied
+
+Some of the remaining issues likely need true upstream fixes. Others are known
+HF-compatibility gaps that still need explicit local handling.
 
 Pinned vendored commit: `71af3a5e41a8e265330bc693194c708cf6df4724`
 (see `native/iree_tokenizers_native/vendor/IREE_COMMIT`).
@@ -29,7 +41,7 @@ cat results/parity_report.md
 
 ---
 
-## 1. Byte-level BPE decoder mangles multibyte UTF-8 for emoji / CJK-adjacent sequences
+## 1. Byte-level BPE decoder mangles multibyte UTF-8 for emoji / CJK-adjacent sequences [fixed locally]
 
 **Affected models (all byte-level BPE):**
 
@@ -102,7 +114,7 @@ code cannot grow the buffer and returns `INTERNAL`.
 
 ---
 
-## 3. `EncodeStream.finalize/1` fails for Unigram / SentencePiece models
+## 3. `EncodeStream.finalize/1` fails for Unigram / SentencePiece models [fixed locally]
 
 **Affected models:** `google-t5/t5-small` (both `:huggingface_json` and
 `:sentencepiece_model` load paths). Any T5 / mT5 / FLAN-T5 derivative will
@@ -136,7 +148,7 @@ one-shot `IREE.Tokenizers.Tokenizer.encode/3` on the full input.
 
 ---
 
-## 4. `EncodeStream` produces different tokens than `encode/3` on SentencePiece/Llama tokenizers
+## 4. `EncodeStream` produces different tokens than `encode/3` on SentencePiece/Llama tokenizers [fixed locally]
 
 **Affected models:** `microsoft/Phi-3-mini-4k-instruct` and, by
 extension, other Llama / Mistral family tokenizers that use a
@@ -169,9 +181,14 @@ against a one-shot encode.
 
 ---
 
-## 5. Llama-SPM tokenizers over-tokenize on repeated punctuation and long mixed inputs
+## 5. Llama-SPM tokenizers over-tokenize on repeated punctuation and long mixed inputs [mostly fixed locally]
 
 **Affected model:** `microsoft/Phi-3-mini-4k-instruct`.
+
+The long-input and repeated-punctuation cases are fixed locally on this branch.
+The remaining unresolved parity gap in this model family is the
+`special_token_literal` case, which appears to be tied to added-token metadata
+semantics rather than the long-input BPE path documented below.
 
 **Shape of the failure**
 
