@@ -5,19 +5,32 @@ use rustler::{NifStruct, ResourceArc};
 use crate::{
     error::{check_status, is_resource_exhausted, ErrorKind, Result, TokenizerError},
     ffi,
-    tokenizer::{invalid_argument, TokenizerResource},
+    tokenizer::{encode_impl, invalid_argument, StreamEncodeStrategy, TokenizerResource},
 };
 
-pub struct EncodeStreamState {
+pub struct NativeEncodeStreamState {
     _tokenizer: ResourceArc<TokenizerResource>,
     state: *mut ffi::iree_tokenizer_encode_state_t,
     _state_storage: Vec<u8>,
     _transform_buffer: Vec<u8>,
 }
 
+pub struct BufferedEncodeStreamState {
+    tokenizer: ResourceArc<TokenizerResource>,
+    add_special_tokens: bool,
+    buffered: Vec<u8>,
+}
+
+pub enum EncodeStreamState {
+    Native(NativeEncodeStreamState),
+    Buffered(BufferedEncodeStreamState),
+}
+
+unsafe impl Send for NativeEncodeStreamState {}
+unsafe impl Send for BufferedEncodeStreamState {}
 unsafe impl Send for EncodeStreamState {}
 
-impl Drop for EncodeStreamState {
+impl Drop for NativeEncodeStreamState {
     fn drop(&mut self) {
         if !self.state.is_null() {
             unsafe { ffi::iree_tokenizer_encode_state_deinitialize(self.state) };
@@ -26,6 +39,45 @@ impl Drop for EncodeStreamState {
 }
 
 impl EncodeStreamState {
+    pub fn new(
+        tokenizer: ResourceArc<TokenizerResource>,
+        add_special_tokens: bool,
+        max_chunk_bytes: usize,
+    ) -> Result<Self> {
+        match tokenizer.stream_encode_strategy {
+            StreamEncodeStrategy::BufferedFinalize => Ok(Self::Buffered(
+                BufferedEncodeStreamState::new(tokenizer, add_special_tokens),
+            )),
+            StreamEncodeStrategy::Native if tokenizer.model_type == "Unigram" => {
+                Ok(Self::Buffered(BufferedEncodeStreamState::new(
+                    tokenizer,
+                    add_special_tokens,
+                )))
+            }
+            StreamEncodeStrategy::Native => Ok(Self::Native(NativeEncodeStreamState::new(
+                tokenizer,
+                add_special_tokens,
+                max_chunk_bytes,
+            )?)),
+        }
+    }
+
+    fn feed(&mut self, chunk: &[u8]) -> Result<Vec<i32>> {
+        match self {
+            Self::Native(state) => state.feed(chunk),
+            Self::Buffered(state) => state.feed(chunk),
+        }
+    }
+
+    fn finalize(self) -> Result<Vec<i32>> {
+        match self {
+            Self::Native(state) => state.finalize(),
+            Self::Buffered(state) => state.finalize(),
+        }
+    }
+}
+
+impl NativeEncodeStreamState {
     pub fn new(
         tokenizer: ResourceArc<TokenizerResource>,
         add_special_tokens: bool,
@@ -125,18 +177,6 @@ impl EncodeStreamState {
                 }
 
                 if produced == 0 {
-                    // The vendored IREE tokenizer runtime returned
-                    // `has_pending=true` but emitted zero tokens on finalize.
-                    // We cannot make forward progress from the Rust layer
-                    // without double-encoding the trailing bytes, so surface
-                    // a clear, actionable error with a workaround hint and
-                    // let the caller fall back to a one-shot
-                    // `Tokenizer.encode/3` on the full input.
-                    //
-                    // Known upstream trigger: Unigram / SentencePiece
-                    // tokenizers such as google-t5/t5-small finalize into
-                    // this state on long inputs. See
-                    // docs/UPSTREAM_BUGS.md for repro details.
                     return Err(invalid_argument(
                         "encode stream finalize made no progress while pending \
                          data remained; this is an upstream tokenizer runtime \
@@ -149,6 +189,31 @@ impl EncodeStreamState {
                 break;
             }
         }
+    }
+}
+
+impl BufferedEncodeStreamState {
+    fn new(tokenizer: ResourceArc<TokenizerResource>, add_special_tokens: bool) -> Self {
+        Self {
+            tokenizer,
+            add_special_tokens,
+            buffered: Vec::new(),
+        }
+    }
+
+    fn feed(&mut self, chunk: &[u8]) -> Result<Vec<i32>> {
+        self.buffered.extend_from_slice(chunk);
+        Ok(Vec::new())
+    }
+
+    fn finalize(self) -> Result<Vec<i32>> {
+        let encoding = encode_impl(
+            &self.tokenizer,
+            &self.buffered,
+            self.add_special_tokens,
+            false,
+        )?;
+        Ok(encoding.ids)
     }
 }
 

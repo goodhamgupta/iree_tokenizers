@@ -23,6 +23,7 @@ pub struct TokenizerResource {
     pub(crate) ptr: *mut ffi::iree_tokenizer_t,
     pub(crate) model_type: String,
     pub(crate) decode_strategy: DecodeStrategy,
+    pub(crate) stream_encode_strategy: StreamEncodeStrategy,
 }
 
 unsafe impl Send for TokenizerResource {}
@@ -60,6 +61,12 @@ pub struct Encoding {
 pub(crate) enum DecodeStrategy {
     Native,
     SentencePieceBpe,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StreamEncodeStrategy {
+    Native,
+    BufferedFinalize,
 }
 
 #[derive(NifTaggedEnum)]
@@ -842,9 +849,16 @@ fn unk_source_slice(
 #[derive(Clone, Copy, Default)]
 pub(crate) struct TokenizerMetadata {
     pub(crate) decode_strategy: DecodeStrategy,
+    pub(crate) stream_encode_strategy: StreamEncodeStrategy,
 }
 
 impl Default for DecodeStrategy {
+    fn default() -> Self {
+        Self::Native
+    }
+}
+
+impl Default for StreamEncodeStrategy {
     fn default() -> Self {
         Self::Native
     }
@@ -867,6 +881,7 @@ fn tokenizer_from_raw(
             ptr: raw,
             model_type,
             decode_strategy: metadata.decode_strategy,
+            stream_encode_strategy: metadata.stream_encode_strategy,
         }),
     })
 }
@@ -897,7 +912,29 @@ pub(crate) fn tokenizer_metadata_from_hf_json(json: &[u8]) -> TokenizerMetadata 
         DecodeStrategy::Native
     };
 
-    TokenizerMetadata { decode_strategy }
+    let stream_encode_strategy = infer_stream_encode_strategy(&root);
+
+    TokenizerMetadata {
+        decode_strategy,
+        stream_encode_strategy,
+    }
+}
+
+fn infer_stream_encode_strategy(root: &Value) -> StreamEncodeStrategy {
+    match root
+        .get("model")
+        .and_then(|model| model.get("type"))
+        .and_then(Value::as_str)
+    {
+        Some("Unigram") => StreamEncodeStrategy::BufferedFinalize,
+        Some("BPE")
+            if root.get("pre_tokenizer").is_none()
+                || root.get("pre_tokenizer") == Some(&Value::Null) =>
+        {
+            StreamEncodeStrategy::BufferedFinalize
+        }
+        _ => StreamEncodeStrategy::Native,
+    }
 }
 
 fn is_sentencepiece_bpe_decoder(root: &Value) -> bool {
