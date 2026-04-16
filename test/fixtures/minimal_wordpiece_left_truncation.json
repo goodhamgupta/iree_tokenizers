@@ -1,0 +1,31 @@
+{
+  "version": "1.0",
+  "truncation": {
+    "max_length": 4,
+    "strategy": "LongestFirst",
+    "direction": "Left",
+    "stride": 0
+  },
+  "model": {
+    "type": "WordPiece",
+    "unk_token": "[UNK]",
+    "continuing_subword_prefix": "##",
+    "max_input_chars_per_word": 100,
+    "vocab": {
+      "[UNK]": 0,
+      "hello": 2,
+      "world": 3,
+      "token": 4,
+      "more": 6,
+      "text": 7
+    }
+  },
+  "pre_tokenizer": {
+    "type": "Whitespace"
+  },
+  "decoder": {
+    "type": "WordPiece",
+    "prefix": "##",
+    "cleanup": false
+  }
+}

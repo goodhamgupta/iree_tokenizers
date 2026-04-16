@@ -153,6 +153,16 @@ defmodule IREETokenizers.SentencePieceIntegrationTest do
     assert_full_encoding_parity(iree_tokenizer, hf_tokenizer, inputs)
   end
 
+  test "matches official tokenizers on phi-3 special token literals" do
+    repo = "microsoft/Phi-3-mini-4k-instruct"
+    text = "Try <|endoftext|> and <s> </s> <pad> <unk> [CLS] [SEP] in one line"
+
+    {:ok, iree_tokenizer} = IREETokenizer.from_pretrained(repo)
+    {:ok, hf_tokenizer} = HFTokenizer.from_pretrained(repo)
+
+    assert_ids_and_decode_parity(iree_tokenizer, hf_tokenizer, text)
+  end
+
   defp assert_full_encoding_parity(iree_tokenizer, hf_tokenizer, inputs) do
     Enum.each(inputs, fn text ->
       {:ok, iree_encoding} = IREETokenizer.encode(iree_tokenizer, text, add_special_tokens: false)
@@ -178,5 +188,27 @@ defmodule IREETokenizers.SentencePieceIntegrationTest do
       assert iree_decoded == hf_decoded,
              "decoded text diverged on input #{inspect(text)}"
     end)
+  end
+
+  defp assert_ids_and_decode_parity(iree_tokenizer, hf_tokenizer, text) do
+    {:ok, iree_encoding} = IREETokenizer.encode(iree_tokenizer, text, add_special_tokens: false)
+    {:ok, hf_encoding} = HFTokenizer.encode(hf_tokenizer, text, add_special_tokens: false)
+
+    assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding),
+           "ids diverged on input #{inspect(text)}"
+
+    assert iree_encoding.type_ids == HFEncoding.get_type_ids(hf_encoding),
+           "type_ids diverged on input #{inspect(text)}"
+
+    assert {:ok, iree_decoded} =
+             IREETokenizer.decode(iree_tokenizer, iree_encoding.ids, skip_special_tokens: false)
+
+    assert {:ok, hf_decoded} =
+             HFTokenizer.decode(hf_tokenizer, HFEncoding.get_ids(hf_encoding),
+               skip_special_tokens: false
+             )
+
+    assert iree_decoded == hf_decoded,
+           "decoded text diverged on input #{inspect(text)}"
   end
 end

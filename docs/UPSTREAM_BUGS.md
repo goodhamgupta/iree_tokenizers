@@ -7,16 +7,14 @@ our vendored IREE tokenizer snapshot.
 Update on this branch:
 - Fixed locally in this package:
   - byte-level BPE decode corruption for emoji / CJK-adjacent sequences
+  - `gpt2` batch encode deadlock via parity-preserving sequential fallback
   - SentencePiece / Llama-family `EncodeStream` chunk-boundary divergence
   - Unigram / SentencePiece `EncodeStream.finalize/1` no-progress failure
   - Phi-3 repeated punctuation and long-input BPE encode divergences
+  - Phi-3 `special_token_literal` id/decode parity
+  - tokenizer.json padding / truncation auto-application for one-shot and batch encode
 - Still unresolved here (documented below and/or in the parity report):
-  - `gpt2` batch encode deadlock
   - BERT control-character whitespace classification mismatch
-  - BERT batch-path emoji mismatch
-  - Phi-3 `special_token_literal` added-token parity mismatch
-  - T5 batch encode mismatches on long inputs
-  - tokenizer.json `padding.max_length` is still not auto-applied
 
 Some of the remaining issues likely need true upstream fixes. Others are known
 HF-compatibility gaps that still need explicit local handling.
@@ -81,7 +79,7 @@ families on the Hub (DeepSeek, Qwen, GPT-2) on realistic prompts.
 
 ---
 
-## 2. `encode_batch/3` deadlocks for `gpt2` on mixed-length input lists
+## 2. `encode_batch/3` deadlocks for `gpt2` on mixed-length input lists [fixed locally]
 
 **Affected models:** `openai-community/gpt2`.
 
@@ -185,10 +183,7 @@ against a one-shot encode.
 
 **Affected model:** `microsoft/Phi-3-mini-4k-instruct`.
 
-The long-input and repeated-punctuation cases are fixed locally on this branch.
-The remaining unresolved parity gap in this model family is the
-`special_token_literal` case, which appears to be tied to added-token metadata
-semantics rather than the long-input BPE path documented below.
+The long-input, repeated-punctuation, and `special_token_literal` cases are fixed locally on this branch.
 
 **Shape of the failure**
 
@@ -240,9 +235,13 @@ which is rare in practice.
 
 ---
 
-## 7. BERT `encode_batch/3` disagrees with single `encode/3` on the `emoji` case
+## 7. BERT `encode_batch/3` disagrees with single `encode/3` on the `emoji` case [fixed locally]
 
 **Affected model:** `google-bert/bert-base-uncased`.
+
+This batch-path-only divergence is fixed locally on this branch via the same
+parity-preserving sequential `encode_batch/3` fallback that resolves the GPT-2
+batch deadlock and T5 batch mismatches.
 
 **Shape of the failure**
 
@@ -258,10 +257,15 @@ vendored C runtime.
 
 ---
 
-## 8. Tokenizer-level `padding` config in `tokenizer.json` is ignored
+## 8. Tokenizer-level `padding` config in `tokenizer.json` is ignored [mostly fixed locally]
 
 **Affected model:** `sentence-transformers/all-MiniLM-L6-v2` (and every
 other model that sets `padding.max_length` in its `tokenizer.json`).
+
+One-shot `encode/3`, `encode_batch/3`, and config-derived stream output now
+apply tokenizer-level padding/truncation locally on this branch. The remaining
+observable mismatch for `sentence-transformers/all-MiniLM-L6-v2` comes from the
+underlying BERT control-character whitespace bug above, not from padding.
 
 **Shape of the failure**
 

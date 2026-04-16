@@ -63,6 +63,22 @@ defmodule IREETokenizers.StreamIntegrationTest do
     )
   end
 
+  test "phi-3 streaming preserves one-shot ids across literal special-token boundaries" do
+    text =
+      String.duplicate("Tokenization performance matters for real-time inference. ", 400) <>
+        "<s>tail"
+
+    assert_stream_matches_oneshot(
+      "microsoft/Phi-3-mini-4k-instruct",
+      text,
+      [
+        String.duplicate("Tokenization performance matters for real-time inference. ", 400),
+        "<s>",
+        "tail"
+      ]
+    )
+  end
+
   defp benchmark_corpus(byte_target) do
     paragraph =
       "Tokenization performance matters for real-time inference, long-context prompting, retrieval pipelines, and interactive developer tooling. "

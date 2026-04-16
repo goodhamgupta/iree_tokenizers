@@ -1,0 +1,40 @@
+{
+  "version": "1.0",
+  "truncation": {
+    "max_length": 4,
+    "strategy": "LongestFirst",
+    "stride": 0
+  },
+  "padding": {
+    "strategy": {"Fixed": 4},
+    "direction": "Right",
+    "pad_to_multiple_of": null,
+    "pad_id": 0,
+    "pad_type_id": 0,
+    "pad_token": "[PAD]"
+  },
+  "model": {
+    "type": "WordPiece",
+    "unk_token": "[UNK]",
+    "continuing_subword_prefix": "##",
+    "max_input_chars_per_word": 100,
+    "vocab": {
+      "[PAD]": 0,
+      "[UNK]": 1,
+      "hello": 2,
+      "world": 3,
+      "token": 4,
+      "##s": 5,
+      "more": 6,
+      "text": 7
+    }
+  },
+  "pre_tokenizer": {
+    "type": "Whitespace"
+  },
+  "decoder": {
+    "type": "WordPiece",
+    "prefix": "##",
+    "cleanup": false
+  }
+}
