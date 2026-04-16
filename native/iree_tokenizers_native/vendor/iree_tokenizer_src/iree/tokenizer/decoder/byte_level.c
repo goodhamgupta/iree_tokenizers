@@ -45,7 +45,7 @@ iree_status_t iree_tokenizer_decoder_byte_level_allocate(
   iree_tokenizer_decoder_initialize(
       &decoder->base, &iree_tokenizer_decoder_byte_level_vtable,
       sizeof(iree_tokenizer_decoder_byte_level_state_t),
-      IREE_TOKENIZER_DECODER_CAPABILITY_STATELESS);
+      IREE_TOKENIZER_DECODER_CAPABILITY_NONE);
   decoder->allocator = allocator;
 
   *out_decoder = &decoder->base;
