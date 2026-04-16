@@ -150,7 +150,7 @@ defmodule IREE.Tokenizers.Tokenizer do
       case opts[:format] do
         :huggingface_json ->
           with {:ok, tokenizer} <- IREE.Tokenizers.Native.tokenizer_from_buffer(buffer) do
-            {:ok, register_components(tokenizer, %{})}
+            {:ok, register_components(tokenizer, huggingface_runtime_components(buffer))}
           end
 
         :tiktoken ->
@@ -305,7 +305,13 @@ defmodule IREE.Tokenizers.Tokenizer do
              input,
              Keyword.take(opts, [:add_special_tokens, :track_offsets])
            ) do
-      {:ok, Encoding.transform(encoding, opts[:encoding_transformations])}
+      encoding = apply_default_truncation(tokenizer, encoding, opts[:add_special_tokens])
+
+      {:ok,
+       Encoding.transform(
+         encoding,
+         effective_encoding_transformations(tokenizer, opts[:encoding_transformations])
+       )}
     end
   end
 
@@ -333,13 +339,15 @@ defmodule IREE.Tokenizers.Tokenizer do
 
     case Enum.find(inputs, &(not is_binary(&1))) do
       nil ->
-        with {:ok, encodings} <-
-               IREE.Tokenizers.Native.tokenizer_encode_batch(
-                 tokenizer,
-                 inputs,
-                 Keyword.take(opts, [:add_special_tokens, :track_offsets])
-               ) do
-          {:ok, Enum.map(encodings, &Encoding.transform(&1, opts[:encoding_transformations]))}
+        Enum.reduce_while(inputs, {:ok, []}, fn input, {:ok, acc} ->
+          case encode(tokenizer, input, opts) do
+            {:ok, encoding} -> {:cont, {:ok, [encoding | acc]}}
+            {:error, _reason} = error -> {:halt, error}
+          end
+        end)
+        |> case do
+          {:ok, encodings} -> {:ok, Enum.reverse(encodings)}
+          {:error, _reason} = error -> error
         end
 
       {_left, _right} ->
@@ -514,9 +522,219 @@ defmodule IREE.Tokenizers.Tokenizer do
   defp maybe_put_auth(headers, token), do: [{"authorization", "Bearer #{token}"} | headers]
 
   defp register_components(tokenizer, components) do
-    ComponentRegistry.put(tokenizer.resource, components)
+    merged = Map.merge(ComponentRegistry.get(tokenizer.resource), components)
+    ComponentRegistry.put(tokenizer.resource, merged)
     tokenizer
   end
+
+  defp huggingface_runtime_components(buffer) do
+    case Jason.decode(buffer) do
+      {:ok, root} when is_map(root) ->
+        transformations = default_encoding_transformations_from_hf_json(root)
+        truncation = default_truncation_config_from_hf_json(root)
+
+        %{}
+        |> maybe_put_default_transformations(transformations)
+        |> maybe_put_default_truncation(truncation)
+
+      _ ->
+        %{}
+    end
+  rescue
+    Jason.DecodeError -> %{}
+  end
+
+  defp maybe_put_default_transformations(components, []), do: components
+
+  defp maybe_put_default_transformations(components, transformations) do
+    Map.put(components, :default_encoding_transformations, transformations)
+  end
+
+  defp maybe_put_default_truncation(components, nil), do: components
+
+  defp maybe_put_default_truncation(components, truncation) do
+    Map.put(components, :default_truncation, truncation)
+  end
+
+  defp effective_encoding_transformations(tokenizer, transformations) do
+    default_encoding_transformations(tokenizer) ++ transformations
+  end
+
+  defp default_encoding_transformations(tokenizer) do
+    ComponentRegistry.get(tokenizer.resource)[:default_encoding_transformations] || []
+  end
+
+  defp apply_default_truncation(tokenizer, %Encoding{} = encoding, add_special_tokens) do
+    case ComponentRegistry.get(tokenizer.resource)[:default_truncation] do
+      %{max_length: max_length, direction: direction}
+      when is_integer(max_length) and max_length >= 0 and direction in [:left, :right] ->
+        if add_special_tokens do
+          truncate_preserving_special_tokens(encoding, max_length, direction)
+        else
+          Encoding.truncate(encoding, max_length, direction: direction)
+        end
+
+      _ ->
+        encoding
+    end
+  end
+
+  defp truncate_preserving_special_tokens(%Encoding{} = encoding, max_length, direction) do
+    current_length = length(encoding.ids)
+
+    cond do
+      current_length <= max_length ->
+        encoding
+
+      true ->
+        prefix_specials = count_prefix_special_tokens(encoding.special_tokens_mask)
+        suffix_specials = count_suffix_special_tokens(encoding.special_tokens_mask)
+
+        if prefix_specials + suffix_specials <= max_length and
+             prefix_specials + suffix_specials > 0 do
+          middle_length = max_length - prefix_specials - suffix_specials
+          suffix_start = current_length - suffix_specials
+
+          middle_start =
+            case direction do
+              :left -> max(suffix_start - middle_length, prefix_specials)
+              :right -> prefix_specials
+            end
+
+          %Encoding{
+            ids:
+              slice_segment(encoding.ids, 0, prefix_specials) ++
+                slice_segment(encoding.ids, middle_start, middle_length) ++
+                slice_segment(encoding.ids, suffix_start, suffix_specials),
+            type_ids:
+              slice_segment(encoding.type_ids, 0, prefix_specials) ++
+                slice_segment(encoding.type_ids, middle_start, middle_length) ++
+                slice_segment(encoding.type_ids, suffix_start, suffix_specials),
+            offsets:
+              maybe_rebuild_offsets(
+                encoding.offsets,
+                prefix_specials,
+                middle_start,
+                middle_length,
+                suffix_start,
+                suffix_specials
+              ),
+            attention_mask:
+              slice_segment(encoding.attention_mask, 0, prefix_specials) ++
+                slice_segment(encoding.attention_mask, middle_start, middle_length) ++
+                slice_segment(encoding.attention_mask, suffix_start, suffix_specials),
+            special_tokens_mask:
+              slice_segment(encoding.special_tokens_mask, 0, prefix_specials) ++
+                slice_segment(encoding.special_tokens_mask, middle_start, middle_length) ++
+                slice_segment(encoding.special_tokens_mask, suffix_start, suffix_specials),
+            tokens:
+              slice_segment(encoding.tokens, 0, prefix_specials) ++
+                slice_segment(encoding.tokens, middle_start, middle_length) ++
+                slice_segment(encoding.tokens, suffix_start, suffix_specials)
+          }
+        else
+          Encoding.truncate(encoding, max_length, direction: direction)
+        end
+    end
+  end
+
+  defp count_prefix_special_tokens(mask), do: Enum.take_while(mask, &(&1 == 1)) |> length()
+
+  defp count_suffix_special_tokens(mask) do
+    mask
+    |> Enum.reverse()
+    |> Enum.take_while(&(&1 == 1))
+    |> length()
+  end
+
+  defp slice_segment(_list, _start, 0), do: []
+  defp slice_segment(list, start, length), do: Enum.slice(list, start, length)
+
+  defp maybe_rebuild_offsets(
+         nil,
+         _prefix_specials,
+         _middle_start,
+         _middle_length,
+         _suffix_start,
+         _suffix_specials
+       ),
+       do: nil
+
+  defp maybe_rebuild_offsets(
+         offsets,
+         prefix_specials,
+         middle_start,
+         middle_length,
+         suffix_start,
+         suffix_specials
+       ) do
+    slice_segment(offsets, 0, prefix_specials) ++
+      slice_segment(offsets, middle_start, middle_length) ++
+      slice_segment(offsets, suffix_start, suffix_specials)
+  end
+
+  defp default_encoding_transformations_from_hf_json(root) do
+    []
+    |> maybe_add_padding(root)
+  end
+
+  defp default_truncation_config_from_hf_json(%{"truncation" => truncation})
+       when is_map(truncation) do
+    case Map.get(truncation, "max_length") do
+      max_length when is_integer(max_length) and max_length >= 0 ->
+        %{
+          max_length: max_length,
+          direction: truncation_direction(truncation)
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp default_truncation_config_from_hf_json(_root), do: nil
+
+  defp truncation_direction(%{"direction" => direction}) when is_binary(direction) do
+    case String.downcase(direction) do
+      "left" -> :left
+      _ -> :right
+    end
+  end
+
+  defp truncation_direction(_truncation), do: :right
+
+  defp maybe_add_padding(transformations, %{"padding" => padding}) when is_map(padding) do
+    case padding_length(padding) do
+      nil ->
+        transformations
+
+      target_length ->
+        transformations ++
+          [
+            IREE.Tokenizers.Encoding.Transformation.pad(target_length,
+              direction: padding_direction(padding),
+              pad_id: Map.get(padding, "pad_id", 0),
+              pad_type_id: Map.get(padding, "pad_type_id", 0),
+              pad_token: Map.get(padding, "pad_token", "[PAD]")
+            )
+          ]
+    end
+  end
+
+  defp maybe_add_padding(transformations, _root), do: transformations
+
+  defp padding_length(%{"strategy" => %{"Fixed" => length}}) when is_integer(length), do: length
+  defp padding_length(%{"max_length" => length}) when is_integer(length), do: length
+  defp padding_length(_padding), do: nil
+
+  defp padding_direction(%{"direction" => direction}) when is_binary(direction) do
+    case String.downcase(direction) do
+      "left" -> :left
+      _ -> :right
+    end
+  end
+
+  defp padding_direction(_padding), do: :right
 
   defp tokenizer_json_from_model(%Model{type: "BPE", spec: spec}) do
     {:ok,

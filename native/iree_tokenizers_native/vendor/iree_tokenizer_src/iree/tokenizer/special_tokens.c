@@ -452,6 +452,22 @@ static bool iree_tokenizer_special_tokens_flags_allow_match(
   return true;
 }
 
+static iree_host_size_t iree_tokenizer_special_tokens_consume_rstrip(
+    const iree_tokenizer_special_tokens_t* special_tokens,
+    iree_host_size_t token_index, iree_string_view_t input,
+    iree_host_size_t consumed_length) {
+  if (!iree_any_bit_set(special_tokens->flags[token_index],
+                        IREE_TOKENIZER_SPECIAL_TOKEN_FLAG_RSTRIP)) {
+    return consumed_length;
+  }
+
+  while (consumed_length < input.size &&
+         (uint8_t)input.data[consumed_length] <= 0x20) {
+    ++consumed_length;
+  }
+  return consumed_length;
+}
+
 iree_tokenizer_special_tokens_match_result_t
 iree_tokenizer_special_tokens_match(
     const iree_tokenizer_special_tokens_t* special_tokens,
@@ -517,7 +533,8 @@ iree_tokenizer_special_tokens_match(
         if (iree_tokenizer_special_tokens_flags_allow_match(
                 special_tokens, i, state, next_byte, at_end)) {
           // Match accepted!
-          *out_length = new_bytes_consumed;
+          *out_length = iree_tokenizer_special_tokens_consume_rstrip(
+              special_tokens, i, input, new_bytes_consumed);
           *out_id = special_tokens->ids[i];
           state->match_position = 0;
           return IREE_TOKENIZER_SPECIAL_TOKENS_MATCHED;
@@ -582,7 +599,8 @@ iree_tokenizer_special_tokens_match(
 
         if (iree_tokenizer_special_tokens_flags_allow_match(
                 special_tokens, i, state, next_byte, at_end)) {
-          *out_length = token_length;
+          *out_length = iree_tokenizer_special_tokens_consume_rstrip(
+              special_tokens, i, input, token_length);
           *out_id = special_tokens->ids[i];
           return IREE_TOKENIZER_SPECIAL_TOKENS_MATCHED;
         }

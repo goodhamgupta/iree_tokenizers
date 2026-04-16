@@ -1484,6 +1484,50 @@ void iree_tokenizer_encode_state_reset(iree_tokenizer_encode_state_t* state,
   state->in_finalize_mode = false;
 }
 
+static void iree_tokenizer_encode_state_reset_after_special_token(
+    iree_tokenizer_encode_state_t* state) {
+  if (!state) return;
+  const iree_tokenizer_t* tokenizer = state->tokenizer;
+  bool first_consumed_by_special_token =
+      state->first_consumed_by_special_token;
+  bool in_finalize_mode = state->in_finalize_mode;
+
+  iree_tokenizer_model_state_deinitialize(state->model_state);
+  iree_tokenizer_segmenter_state_deinitialize(state->segmenter_state);
+  iree_tokenizer_normalizer_state_deinitialize(state->normalizer_state);
+
+  state->read_position = 0;
+  state->write_position = 0;
+  state->segmenter_view_start = 0;
+  state->segment_count = 0;
+  state->segments_consumed = 0;
+  state->has_partial_segment = false;
+
+  if (state->normalizer_state) {
+    iree_tokenizer_normalizer_state_initialize(tokenizer->normalizer,
+                                               (void*)state->normalizer_state,
+                                               &state->normalizer_state);
+  }
+  if (state->segmenter_state) {
+    iree_tokenizer_segmenter_state_initialize(tokenizer->segmenter,
+                                              (void*)state->segmenter_state,
+                                              &state->segmenter_state);
+  }
+  if (state->model_state) {
+    iree_tokenizer_model_state_initialize(
+        tokenizer->model, (void*)state->model_state, &state->model_state);
+  }
+
+  iree_tokenizer_special_tokens_encode_state_initialize(
+      &state->special_token_match);
+  iree_tokenizer_special_tokens_encode_state_initialize(
+      &state->special_token_match_post);
+
+  state->pending_special_token = -1;
+  state->first_consumed_by_special_token = first_consumed_by_special_token;
+  state->in_finalize_mode = in_finalize_mode;
+}
+
 // Returns true if the encode pipeline has content that must be emitted before
 // a special token: ring buffer data, pending segments, or normalizer-buffered
 // data (e.g., NFC combining sequences).
@@ -1876,6 +1920,7 @@ static bool iree_tokenizer_try_emit_pending_special_token(
                                                  *total_tokens, 1);
     (*total_tokens)++;
     state->pending_special_token = -1;
+    iree_tokenizer_encode_state_reset_after_special_token(state);
     return true;
   }
   return false;
@@ -2338,6 +2383,7 @@ static iree_status_t iree_tokenizer_encode_state_pump(
             iree_tokenizer_postprocessor_assign_type_ids(
                 &state->postprocessor, *output, *total_tokens, 1);
             (*total_tokens)++;
+            iree_tokenizer_encode_state_reset_after_special_token(state);
           }
         }
         return iree_ok_status();
