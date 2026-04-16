@@ -544,6 +544,7 @@ mod tests {
             ptr: raw,
             model_type: "BPE".to_string(),
             decode_strategy: metadata.decode_strategy,
+            stream_encode_strategy: metadata.stream_encode_strategy,
         }
     }
 
