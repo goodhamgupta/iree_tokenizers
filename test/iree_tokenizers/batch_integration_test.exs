@@ -22,6 +22,18 @@ defmodule IREETokenizers.BatchIntegrationTest do
     assert_batch_encoding_parity(iree_tokenizer, hf_tokenizer, inputs)
   end
 
+  test "bert one-shot encode matches Hugging Face on control-character whitespace regression" do
+    input = "bell\x07tab\ttab vertical\vform\ftab back\bspace"
+
+    {:ok, iree_tokenizer} = IREETokenizer.from_pretrained("google-bert/bert-base-uncased")
+    {:ok, hf_tokenizer} = HFTokenizer.from_pretrained("google-bert/bert-base-uncased")
+
+    {:ok, iree_encoding} = IREETokenizer.encode(iree_tokenizer, input, add_special_tokens: false)
+    {:ok, hf_encoding} = HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: false)
+
+    assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
+  end
+
   test "bert batch encode matches per-item Hugging Face parity on emoji regression corpus" do
     inputs = [
       "Hello, world!",

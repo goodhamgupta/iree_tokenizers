@@ -12,12 +12,12 @@ Update on this branch:
   - Unigram / SentencePiece `EncodeStream.finalize/1` no-progress failure
   - Phi-3 repeated punctuation and long-input BPE encode divergences
   - Phi-3 `special_token_literal` id/decode parity
-  - tokenizer.json padding / truncation auto-application for one-shot and batch encode
-- Still unresolved here (documented below and/or in the parity report):
   - BERT control-character whitespace classification mismatch
+  - BERT batch-path emoji mismatch
+  - tokenizer.json padding / truncation auto-application for one-shot, batch, and config-driven stream output
+- Remaining unresolved here:
+  - none in the current selected parity matrix; see the latest `bench/results/parity_report.md` for the verified state.
 
-Some of the remaining issues likely need true upstream fixes. Others are known
-HF-compatibility gaps that still need explicit local handling.
 
 Pinned vendored commit: `71af3a5e41a8e265330bc693194c708cf6df4724`
 (see `native/iree_tokenizers_native/vendor/IREE_COMMIT`).
@@ -210,10 +210,12 @@ than a race.
 
 ---
 
-## 6. BERT BasicTokenizer does not treat `\v`, `\f`, `\b` as whitespace
+## 6. BERT BasicTokenizer does not treat `\v`, `\f`, `\b` as whitespace [fixed locally]
 
 **Affected model:** `google-bert/bert-base-uncased` (and likely every
 WordPiece tokenizer that uses BasicTokenizer's normalizer).
+
+This control-character mismatch is fixed locally on this branch.
 
 **Shape of the failure**
 
@@ -257,33 +259,24 @@ vendored C runtime.
 
 ---
 
-## 8. Tokenizer-level `padding` config in `tokenizer.json` is ignored [mostly fixed locally]
+## 8. Tokenizer-level `padding` config in `tokenizer.json` is ignored [fixed locally]
 
 **Affected model:** `sentence-transformers/all-MiniLM-L6-v2` (and every
 other model that sets `padding.max_length` in its `tokenizer.json`).
 
 One-shot `encode/3`, `encode_batch/3`, and config-derived stream output now
-apply tokenizer-level padding/truncation locally on this branch. The remaining
-observable mismatch for `sentence-transformers/all-MiniLM-L6-v2` comes from the
-underlying BERT control-character whitespace bug above, not from padding.
+apply tokenizer-level padding/truncation locally on this branch.
 
 **Shape of the failure**
 
 `tokenizer.json` sets `padding: max_length=128`. HF's `tokenizers`
-auto-applies this; `encode/3` returns 128 ids for every input. IREE
-returns the raw unpadded id list, so the parity harness reports `0/19`
-matching cases even though the prefix of the IREE output is byte-for-byte
-correct.
+auto-applies this; this branch now does the same for one-shot, batch, and
+config-driven stream encoding.
 
-This is arguably a documented design choice — the README steers users
-toward `IREE.Tokenizers.Encoding.Transformation` for padding. But it is a
-real parity gap with HF and should at minimum be called out in the
-README so that users who migrate from HF are not surprised.
+**Where it lives:** loader/runtime helper logic in `lib/iree/tokenizers/tokenizer.ex`
+and `lib/iree/tokenizers/encode_stream.ex`.
 
-**Where it lives:** the loader / post-processor setup; `tokenizer.rs`
-and / or the vendored config parser.
-
-**Priority:** 🟢 low. Workaround is `Encoding.Transformation.pad/2`.
+**Priority:** 🟢 low. Local parity fix is in place.
 
 ---
 
