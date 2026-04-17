@@ -54,13 +54,13 @@ static inline bool iree_tokenizer_bert_is_ascii(uint8_t byte) {
 }
 
 // HuggingFace-compatible whitespace check.
-// Treats \t, \n, \r as whitespace (NOT control characters).
+// Treats space, \t, \n, \r, and Unicode Z separators as whitespace.
 static inline bool iree_tokenizer_bert_is_whitespace(uint32_t codepoint) {
-  // These are technically control characters but HF treats them as whitespace.
-  if (codepoint == '\t' || codepoint == '\n' || codepoint == '\r') {
+  if (codepoint == ' ' || codepoint == '\t' || codepoint == '\n' ||
+      codepoint == '\r') {
     return true;
   }
-  return iree_unicode_is_whitespace(codepoint);
+  return iree_unicode_is_separator(codepoint);
 }
 
 // HuggingFace-compatible control character check.
