@@ -40,6 +40,40 @@ cargo test --manifest-path native/iree_tokenizers_native/Cargo.toml
 
 In `:dev` and `:test`, the project forces a local source build of the Rust NIF, so you do not need precompiled release assets for normal development.
 
+## Current Parity Status
+
+On the current branch, the selected parity matrix in
+[`bench/results/parity_report.md`](bench/results/parity_report.md) is fully green
+for:
+
+- `Qwen/Qwen2.5-7B-Instruct`
+- `google-bert/bert-base-uncased`
+- `openai-community/gpt2`
+- `microsoft/Phi-3-mini-4k-instruct`
+- `google-t5/t5-small (json)`
+- `google-t5/t5-small (spiece)`
+- `sentence-transformers/all-MiniLM-L6-v2`
+
+The current branch also carries the parity-critical local fixes/workarounds that
+closed the earlier gaps tracked in [`docs/UPSTREAM_BUGS.md`](docs/UPSTREAM_BUGS.md),
+including:
+
+- byte-level UTF-8 decode fidelity fixes for GPT-2/Qwen-style models
+- parity-preserving `encode_batch/3` behavior via per-input `encode/3`
+- buffered `EncodeStream` handling for parity-sensitive tokenizer families
+- auto-application of `tokenizer.json` padding/truncation defaults for one-shot,
+  batch, and config-driven stream output
+
+The benchmark-matrix models currently published in
+[`bench/results/model_matrix.md`](bench/results/model_matrix.md) were also
+re-checked on this branch for one-shot, batch, and stream parity:
+
+- `LiquidAI/LFM2.5-1.2B-Instruct`
+- `Qwen/Qwen3.5-9B`
+- `zai-org/GLM-5.1`
+- `mistralai/Ministral-3-3B-Reasoning-2512`
+- `google/gemma-4-31B-it`
+
 ## Example
 
 ```elixir
@@ -115,6 +149,9 @@ speedups:
   model and skip models whose `.model` path does not match `tokenizer.json`
 - the model matrix excludes embedding models and reports stream numbers only
   when streamed output matches IREE one-shot output on the benchmark corpus
+- the current checked-in model-matrix rows have also been re-checked on this
+  branch for 38 representative one-shot cases per model, plus batch parity and
+  benchmark-corpus stream parity
 
 #### Local fixture comparison against `elixir-nx/tokenizers`
 

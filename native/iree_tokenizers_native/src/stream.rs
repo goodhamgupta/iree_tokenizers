@@ -119,7 +119,13 @@ impl NativeEncodeStreamState {
     fn feed(&mut self, chunk: &[u8]) -> Result<Vec<i32>> {
         let mut all_ids = Vec::new();
         let mut offset = 0usize;
-        let mut ids_buffer = vec![0i32; 1024];
+        // Size the output for the current feed, not an arbitrary small batch.
+        // `iree_tokenizer_encode_state_feed` can fill its output exactly
+        // without reporting RESOURCE_EXHAUSTED; if that happens after consuming
+        // the input, the Rust wrapper cannot safely replay the same bytes. A
+        // per-byte upper bound avoids the silent-prefix path while preserving
+        // native streaming semantics at chunk boundaries.
+        let mut ids_buffer = vec![0i32; chunk.len().saturating_add(64).max(1024)];
 
         while offset < chunk.len() {
             let (consumed, produced) =

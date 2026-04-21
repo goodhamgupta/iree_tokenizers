@@ -15,11 +15,18 @@ Update on this branch:
   - BERT control-character whitespace classification mismatch
   - BERT batch-path emoji mismatch
   - tokenizer.json padding / truncation auto-application for one-shot, batch, and config-driven stream output
+  - long T5 tokenizer.json Metaspace finalize overflow on repeated inputs
+  - Gemma-style Metaspace + ByteFallback BPE stream chunk-boundary divergence via buffered finalize fallback
 - Remaining unresolved here:
   - none in the current selected parity matrix; see the latest `bench/results/parity_report.md` for the verified state.
+- Additional verification on this branch:
+  - the benchmark-matrix rows currently published in `bench/results/model_matrix.md`
+    (`LiquidAI/LFM2.5-1.2B-Instruct`, `Qwen/Qwen3.5-9B`, `zai-org/GLM-5.1`,
+    `mistralai/Ministral-3-3B-Reasoning-2512`, and `google/gemma-4-31B-it`)
+    all passed a targeted one-shot, batch, and stream parity sweep.
 
 
-Pinned vendored commit: `71af3a5e41a8e265330bc693194c708cf6df4724`
+Pinned vendored commit: `af030e43d8343263a6c869eae32f958f229ff7af`
 (see `native/iree_tokenizers_native/vendor/IREE_COMMIT`).
 
 Reference implementation for parity checks: [`elixir-nx/tokenizers`][hf]
@@ -28,14 +35,18 @@ Reference implementation for parity checks: [`elixir-nx/tokenizers`][hf]
 
 [hf]: https://github.com/elixir-nx/tokenizers
 
-## How to reproduce any of these
+## How to verify the current state
 
 ```bash
 cd bench
 mix deps.get
-MODEL_FILTER="<label-from-below>" mix run validate_parity.exs
+mix run validate_parity.exs
 cat results/parity_report.md
 ```
+
+The per-bug sections below preserve the historical failure shapes observed before
+these local fixes/workarounds landed. They are retained for upstream tracking,
+not because they are expected to reproduce on the current branch.
 
 ---
 
@@ -179,11 +190,12 @@ against a one-shot encode.
 
 ---
 
-## 5. Llama-SPM tokenizers over-tokenize on repeated punctuation and long mixed inputs [mostly fixed locally]
+## 5. Llama-SPM tokenizers over-tokenize on repeated punctuation and long mixed inputs [fixed locally]
 
 **Affected model:** `microsoft/Phi-3-mini-4k-instruct`.
 
-The long-input, repeated-punctuation, and `special_token_literal` cases are fixed locally on this branch.
+The tracked `special_token_literal`, `repeated_punct`, `long_repeat_ascii`,
+and `long_mixed` cases are fixed locally on this branch.
 
 **Shape of the failure**
 
@@ -210,7 +222,7 @@ than a race.
 
 ---
 
-## 6. BERT BasicTokenizer does not treat `\v`, `\f`, `\b` as whitespace [fixed locally]
+## 6. BERT control-character handling diverged from Hugging Face BasicTokenizer semantics [fixed locally]
 
 **Affected model:** `google-bert/bert-base-uncased` (and likely every
 WordPiece tokenizer that uses BasicTokenizer's normalizer).
@@ -225,12 +237,17 @@ Input `"bell\x07tab\ttab vertical\vform\ftab back\bspace"` produces:
 - HF:   12 / 10 tokens
 - First diff at index 6, iree `2433`, hf `14192`
 
-HF's BasicTokenizer treats `\v`, `\f`, and `\b` as whitespace-equivalent
-and splits on them; IREE keeps them attached to the preceding word.
+The root cause was a BERT-specific whitespace/control-character classification
+mismatch in the vendored runtime. The current local fix aligns the BERT
+normalizer and segmenter with the Hugging Face behavior used by
+`elixir-nx/tokenizers`: space, `\t`, `\n`, `\r`, and Unicode separator code
+points are treated as whitespace, while other control characters continue to
+follow the BERT control-character path.
 
 **Where it lives:**
-`native/iree_tokenizers_native/vendor/iree_tokenizer_src/iree/tokenizer/normalizer.c`
-(BERT normalizer / whitespace classification).
+`native/iree_tokenizers_native/vendor/iree_tokenizer_src/iree/tokenizer/normalizer/bert.c`
+and
+`native/iree_tokenizers_native/vendor/iree_tokenizer_src/iree/tokenizer/segmenter/bert.c`.
 
 **Priority:** 🟢 low. Only affects literal control characters in input,
 which is rare in practice.

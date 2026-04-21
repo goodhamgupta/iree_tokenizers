@@ -431,7 +431,8 @@ static iree_status_t iree_tokenizer_parse_metaspace_pre_tokenizer(
   // spaces, enabling the word cache optimization in the BPE model.
   if (split_enabled) {
     *out_flags |=
-        IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_WORD_LEVEL_SPLIT;
+        IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_WORD_LEVEL_SPLIT |
+        IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_HAS_WHITESPACE_SPLIT;
   }
 
   return iree_tokenizer_segmenter_metaspace_allocate(

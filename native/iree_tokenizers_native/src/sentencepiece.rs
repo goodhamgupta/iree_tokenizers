@@ -209,16 +209,11 @@ fn unigram_normalizer_json(model: &SentencePieceModel) -> Option<Value> {
 
 fn sentencepiece_unigram_pretokenizer_json(add_prefix_space: bool) -> Value {
     json!({
-        "type": "Sequence",
-        "pretokenizers": [
-            {"type": "WhitespaceSplit"},
-            {
-                "type": "Metaspace",
-                "replacement": "▁",
-                "str_rep": "▁",
-                "add_prefix_space": add_prefix_space
-            }
-        ]
+        "type": "Metaspace",
+        "replacement": "▁",
+        "str_rep": "▁",
+        "add_prefix_space": add_prefix_space,
+        "split": true
     })
 }
 
@@ -499,8 +494,6 @@ fn piece_text(piece: &sentencepiece_model::SentencePiece) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Read;
-
     use sentencepiece::SentencePieceProcessor;
 
     use super::model_to_tokenizer_json;
@@ -521,10 +514,12 @@ mod tests {
     }
 
     fn fetch(url: &str) -> Vec<u8> {
-        let mut reader = ureq::get(url).call().unwrap().into_reader();
-        let mut bytes = Vec::new();
-        reader.read_to_end(&mut bytes).unwrap();
-        bytes
+        ureq::get(url)
+            .call()
+            .unwrap()
+            .body_mut()
+            .read_to_vec()
+            .unwrap()
     }
 
     fn load_iree_tokenizer_from_json(json: &[u8]) -> TokenizerResource {

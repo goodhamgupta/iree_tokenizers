@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-EXPECTED_IREE_COMMIT="71af3a5e41a8e265330bc693194c708cf6df4724"
+EXPECTED_IREE_COMMIT="af030e43d8343263a6c869eae32f958f229ff7af"
 
 if [[ $# -lt 1 ]]; then
   echo "usage: $0 /path/to/iree-checkout" >&2

@@ -722,9 +722,6 @@ static bool iree_tokenizer_bpe_is_suffix_blocked(
       // Skip if the token suffix is consumed before this merge could fire.
       if (merge_effective_rank >= suffix_consumed_at[s]) continue;
 
-      // Skip when suffix == prefix (repeating pattern case).
-      if ((int32_t)suffixes[s] == prefix_token) continue;
-
       // Suffixed tokens consume all remaining input + suffix bytes, so no
       // preemption check is needed. The prefix_token represents the complete
       // remaining segment (remaining_data + partial suffix) and nothing

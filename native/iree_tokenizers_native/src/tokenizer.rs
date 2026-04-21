@@ -189,6 +189,8 @@ pub fn tokenizer_encode_batch(
             .enumerate()
             .map(|(index, text)| ffi::iree_tokenizer_encode_batch_item_t {
                 text: ffi::make_string_view(text.as_slice()),
+                text_pair: ffi::empty_string_view(),
+                flags: 0,
                 output: ffi::iree_tokenizer_token_output_t {
                     capacity: capacities[index],
                     token_ids: ids_bufs[index].as_mut_ptr(),
@@ -509,6 +511,10 @@ pub fn encode_impl(
     track_offsets: bool,
 ) -> Result<Encoding> {
     let mut capacity = text.len() / 2 + 16;
+    // Native encode should never need more than O(input bytes) token slots. If
+    // it keeps returning RESOURCE_EXHAUSTED past this bound, surface the native
+    // pending-state bug instead of doubling buffers until the BEAM is killed.
+    let max_capacity = text.len().saturating_mul(8).saturating_add(1024).max(64);
     // We always tell IREE to populate token offsets even when the caller
     // did not request them, because `encoding_metadata` needs them to map
     // UNK token positions back to their source text slice. The offsets are
@@ -538,8 +544,27 @@ pub fn encode_impl(
         };
 
         if is_resource_exhausted(status) {
+            if capacity >= max_capacity {
+                let native_error = check_status(status).err().unwrap_or_else(|| {
+                    TokenizerError::new(
+                        ErrorKind::ResourceExhausted,
+                        "native encode exhausted output capacity",
+                    )
+                });
+                return Err(TokenizerError::new(
+                    native_error.kind,
+                    format!(
+                        "{}; bounded output capacity reached ({capacity} >= {max_capacity} token slots for {} input bytes)",
+                        native_error.message,
+                        text.len()
+                    ),
+                ));
+            }
             unsafe { ffi::iree_status_ignore(status) };
-            capacity = capacity.max(text.len() + 64) * 2;
+            capacity = capacity
+                .max(text.len() + 64)
+                .saturating_mul(2)
+                .min(max_capacity);
             continue;
         }
 
@@ -553,7 +578,19 @@ pub fn encode_impl(
         // worst-case upper bound of one token per input byte plus slack for
         // special tokens.
         if token_count == capacity && capacity <= text.len() + 16 {
-            capacity = capacity.max(text.len() + 64) * 2;
+            if capacity >= max_capacity {
+                return Err(TokenizerError::new(
+                    ErrorKind::ResourceExhausted,
+                    format!(
+                        "native encode filled output capacity beyond bounded limit ({capacity} >= {max_capacity} token slots for {} input bytes)",
+                        text.len()
+                    ),
+                ));
+            }
+            capacity = capacity
+                .max(text.len() + 64)
+                .saturating_mul(2)
+                .min(max_capacity);
             continue;
         }
 
@@ -921,15 +958,18 @@ pub(crate) fn tokenizer_metadata_from_hf_json(json: &[u8]) -> TokenizerMetadata 
 }
 
 fn infer_stream_encode_strategy(root: &Value) -> StreamEncodeStrategy {
-    match root
+    let model_type = root
         .get("model")
         .and_then(|model| model.get("type"))
-        .and_then(Value::as_str)
-    {
+        .and_then(Value::as_str);
+
+    match model_type {
         Some("Unigram") => StreamEncodeStrategy::BufferedFinalize,
         Some("BPE")
             if root.get("pre_tokenizer").is_none()
-                || root.get("pre_tokenizer") == Some(&Value::Null) =>
+                || root.get("pre_tokenizer") == Some(&Value::Null)
+                || is_sentencepiece_bpe_decoder(root)
+                || is_metaspace_byte_fallback_bpe_decoder(root) =>
         {
             StreamEncodeStrategy::BufferedFinalize
         }
@@ -967,6 +1007,40 @@ fn is_sentencepiece_bpe_decoder(root: &Value) -> bool {
     let has_strip = decoders.iter().any(is_sentencepiece_strip_decoder);
 
     has_replace && has_fuse && has_strip
+}
+
+fn is_metaspace_byte_fallback_bpe_decoder(root: &Value) -> bool {
+    let model_type = root
+        .get("model")
+        .and_then(|model| model.get("type"))
+        .and_then(Value::as_str);
+
+    if model_type != Some("BPE") {
+        return false;
+    }
+
+    let Some(decoder) = root.get("decoder") else {
+        return false;
+    };
+
+    let Some(decoders) = decoder
+        .as_object()
+        .filter(|object| object.get("type").and_then(Value::as_str) == Some("Sequence"))
+        .and_then(|object| object.get("decoders"))
+        .and_then(Value::as_array)
+    else {
+        return false;
+    };
+
+    let has_replace = decoders.iter().any(is_sentencepiece_replace_decoder);
+    let has_byte_fallback = decoders
+        .iter()
+        .any(|decoder| decoder_type(decoder) == Some("ByteFallback"));
+    let has_fuse = decoders
+        .iter()
+        .any(|decoder| decoder_type(decoder) == Some("Fuse"));
+
+    has_replace && has_byte_fallback && has_fuse
 }
 
 fn decoder_type(value: &Value) -> Option<&str> {
