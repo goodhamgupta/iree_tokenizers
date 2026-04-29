@@ -317,6 +317,52 @@ defmodule IREETokenizers.TokenizerTest do
     assert {:ok, "hello world"} = Tokenizer.decode(tokenizer, [1, 2], skip_special_tokens: false)
   end
 
+  test "auto-applies tokenizer.json padding and truncation config" do
+    tokenizer = load_fixture!("minimal_wordpiece_padded.json")
+
+    assert {:ok, %Encoding{} = encoding} =
+             Tokenizer.encode(tokenizer, "hello", add_special_tokens: false)
+
+    assert encoding.ids == [2, 0, 0, 0]
+    assert encoding.type_ids == [0, 0, 0, 0]
+    assert encoding.offsets == nil
+    assert encoding.attention_mask == [1, 0, 0, 0]
+    assert encoding.special_tokens_mask == [0, 1, 1, 1]
+    assert encoding.tokens == ["hello", "[PAD]", "[PAD]", "[PAD]"]
+
+    assert {:ok, [%Encoding{} = left, %Encoding{} = right]} =
+             Tokenizer.encode_batch(tokenizer, ["hello", "hello world token more text"],
+               add_special_tokens: false
+             )
+
+    assert left.ids == [2, 0, 0, 0]
+    assert left.offsets == nil
+    assert right.ids == [2, 3, 4, 6]
+    assert right.offsets == nil
+
+    assert {:ok, stream} = EncodeStream.new(tokenizer, add_special_tokens: false)
+    assert {:ok, []} = EncodeStream.feed(stream, "hello ")
+    assert {:ok, []} = EncodeStream.feed(stream, "world token more text")
+    assert {:ok, streamed_ids} = EncodeStream.finalize(stream)
+    assert streamed_ids == [2, 3, 4, 6]
+
+    assert {:error, {:invalid_argument, "stream already finalized"}} =
+             EncodeStream.finalize(stream)
+
+    assert {:error, {:invalid_argument, "stream already finalized"}} =
+             EncodeStream.feed(stream, "more")
+  end
+
+  test "honors tokenizer.json left truncation direction" do
+    tokenizer = load_fixture!("minimal_wordpiece_left_truncation.json")
+
+    assert {:ok, %Encoding{} = encoding} =
+             Tokenizer.encode(tokenizer, "hello world token more text", add_special_tokens: false)
+
+    assert encoding.ids == [3, 4, 6, 7]
+    assert encoding.offsets == nil
+  end
+
   test "loads unigram fixture and exposes metadata" do
     tokenizer = load_fixture!("minimal_unigram.json")
 

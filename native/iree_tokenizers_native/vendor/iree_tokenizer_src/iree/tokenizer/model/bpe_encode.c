@@ -296,8 +296,42 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
             model, (const uint8_t*)segment.data + byte_position,
             segment.size - byte_position, &token_id, &trie_raw_length);
         if (token_id >= 0) {
-          token_byte_length = trie_raw_length;
-        } else {
+          if (iree_any_bit_set(model->flags,
+                               IREE_TOKENIZER_BPE_FLAG_ENABLE_WORD_CACHE)) {
+            token_byte_length = trie_raw_length;
+          } else {
+            const iree_tokenizer_bpe_split_entry_t* split_table =
+                model->backtrack_tables.split_table;
+            const uint32_t* effective_rank =
+                model->backtrack_tables.effective_rank;
+            const uint32_t* next_prefix_match =
+                model->backtrack_tables.next_prefix_match;
+            uint32_t candidate = (uint32_t)token_id;
+
+            // Only accept directly matchable base vocabulary tokens here.
+            // Merge-produced multi-byte tokens must be formed by the
+            // window/heap merge algorithm; seeding them directly into the
+            // long-path window can over-tokenize long inputs (for example,
+            // accepting ▁jump instead of ▁j + umps). Walk back through longest
+            // proper-prefix matches until we find the longest base token that
+            // can be matched directly.
+            while (true) {
+              if (effective_rank[candidate] == 1 &&
+                  split_table[candidate].left_id == candidate) {
+                token_id = (int32_t)candidate;
+                token_byte_length =
+                    iree_tokenizer_vocab_token_text(model->vocab, token_id).size;
+                break;
+              }
+              candidate = next_prefix_match[candidate];
+              if (candidate == UINT32_MAX) {
+                token_id = -1;
+                break;
+              }
+            }
+          }
+        }
+        if (token_id < 0) {
           // No trie match. Fall back to byte-fallback (<0xNN>) or UNK.
           // For FUSE_UNK, check the last token in the window (not yet emitted)
           // before falling back to last_emitted_token_id.

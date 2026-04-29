@@ -22,6 +22,14 @@ typedef enum {
   IREE_TOKENIZER_BERT_CHAR_INCOMPLETE,
 } iree_tokenizer_bert_char_class_t;
 
+static inline bool iree_tokenizer_bert_is_hf_whitespace(uint32_t codepoint) {
+  if (codepoint == ' ' || codepoint == '\t' || codepoint == '\n' ||
+      codepoint == '\r') {
+    return true;
+  }
+  return iree_unicode_is_separator(codepoint);
+}
+
 // Returns true if the codepoint is BERT punctuation.
 // Matches HuggingFace's is_bert_punc(): ASCII punctuation OR Unicode P.
 //
@@ -64,7 +72,7 @@ iree_tokenizer_bert_classify_next(const char* data, iree_host_size_t position,
   uint32_t codepoint = iree_unicode_utf8_decode(view, &decode_position);
   *out_byte_length = decode_position - position;
 
-  if (iree_unicode_is_whitespace(codepoint)) {
+  if (iree_tokenizer_bert_is_hf_whitespace(codepoint)) {
     return IREE_TOKENIZER_BERT_CHAR_WHITESPACE;
   }
   if (iree_tokenizer_is_bert_punctuation(codepoint)) {

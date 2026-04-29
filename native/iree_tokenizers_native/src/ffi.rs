@@ -46,6 +46,7 @@ pub struct iree_status_handle_t {
 pub type iree_status_t = *mut iree_status_handle_t;
 pub type iree_tokenizer_encode_flags_t = u32;
 pub type iree_tokenizer_decode_flags_t = u32;
+pub type iree_tokenizer_encode_batch_item_flags_t = u32;
 
 #[repr(C)]
 pub struct iree_allocator_t {
@@ -158,6 +159,8 @@ pub struct iree_tokenizer_offset_run_list_t {
 #[derive(Clone, Copy)]
 pub struct iree_tokenizer_encode_batch_item_t {
     pub text: iree_string_view_t,
+    pub text_pair: iree_string_view_t,
+    pub flags: iree_tokenizer_encode_batch_item_flags_t,
     pub output: iree_tokenizer_token_output_t,
     pub out_token_count: usize,
 }
@@ -369,6 +372,13 @@ pub fn make_string_view(bytes: &[u8]) -> iree_string_view_t {
     iree_string_view_t {
         data: bytes.as_ptr() as *const c_char,
         size: bytes.len(),
+    }
+}
+
+pub fn empty_string_view() -> iree_string_view_t {
+    iree_string_view_t {
+        data: std::ptr::null(),
+        size: 0,
     }
 }
 

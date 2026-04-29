@@ -1,5 +1,5 @@
-vendor/iree_tokenizer_src/iree/base/allocator.c
 vendor/iree_tokenizer_src/iree/base/allocator_libc.c
+vendor/iree_tokenizer_src/iree/base/allocator.c
 vendor/iree_tokenizer_src/iree/base/bitfield.c
 vendor/iree_tokenizer_src/iree/base/bitmap.c
 vendor/iree_tokenizer_src/iree/base/internal/arena.c
@@ -18,11 +18,11 @@ vendor/iree_tokenizer_src/iree/base/internal/shm_win32.c
 vendor/iree_tokenizer_src/iree/base/internal/spsc_queue.c
 vendor/iree_tokenizer_src/iree/base/internal/sysfs.c
 vendor/iree_tokenizer_src/iree/base/internal/time.c
-vendor/iree_tokenizer_src/iree/base/internal/unicode.c
 vendor/iree_tokenizer_src/iree/base/internal/unicode_tables.c
+vendor/iree_tokenizer_src/iree/base/internal/unicode.c
 vendor/iree_tokenizer_src/iree/base/printf.c
-vendor/iree_tokenizer_src/iree/base/status.c
 vendor/iree_tokenizer_src/iree/base/status_stack_trace.c
+vendor/iree_tokenizer_src/iree/base/status.c
 vendor/iree_tokenizer_src/iree/base/string_builder.c
 vendor/iree_tokenizer_src/iree/base/string_view.c
 vendor/iree_tokenizer_src/iree/base/time.c

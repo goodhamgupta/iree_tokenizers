@@ -47,7 +47,8 @@ MODEL_FILTER="Qwen/Qwen2.5-7B-Instruct" mix run validate_parity.exs  # one model
 HF_TOKEN=hf_... mix run validate_parity.exs              # gated repos
 ```
 
-The report is written to `bench/results/parity_report.md`. Known failing
-cases are documented in [`docs/UPSTREAM_BUGS.md`](../docs/UPSTREAM_BUGS.md);
-they trace into the vendored IREE tokenizer C runtime and must be fixed
-upstream rather than patched in this package.
+The report is written to `bench/results/parity_report.md`. Historical upstream
+notes and the local fixes/workarounds that closed earlier gaps are documented in
+[`docs/UPSTREAM_BUGS.md`](../docs/UPSTREAM_BUGS.md); consult the latest parity
+report for the live status on the current branch. The selected matrix is green
+on this branch.

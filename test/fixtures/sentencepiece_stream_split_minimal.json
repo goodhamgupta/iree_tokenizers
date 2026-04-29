@@ -1,0 +1,29 @@
+{
+  "normalizer": {
+    "type": "Sequence",
+    "normalizers": [
+      {
+        "type": "Prepend",
+        "prepend": "▁"
+      },
+      {
+        "type": "Replace",
+        "pattern": {
+          "String": " "
+        },
+        "content": "▁"
+      }
+    ]
+  },
+  "model": {
+    "type": "BPE",
+    "vocab": {
+      "▁h": 0,
+      "ello": 1,
+      "▁hello": 2
+    },
+    "merges": [
+      "▁h ello"
+    ]
+  }
+}

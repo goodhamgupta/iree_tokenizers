@@ -17,13 +17,13 @@ vendor/iree_tokenizer_src/iree/tokenizer/format/huggingface/segmenter_json.c
 vendor/iree_tokenizer_src/iree/tokenizer/format/huggingface/tokenizer_json.c
 vendor/iree_tokenizer_src/iree/tokenizer/format/tiktoken/tiktoken.c
 vendor/iree_tokenizer_src/iree/tokenizer/model.c
-vendor/iree_tokenizer_src/iree/tokenizer/model/bpe.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/bpe_backtrack.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/bpe_cache.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/bpe_encode.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/bpe_heap.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/bpe_tables.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/bpe_window.c
+vendor/iree_tokenizer_src/iree/tokenizer/model/bpe.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/unigram.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/wordpiece.c
 vendor/iree_tokenizer_src/iree/tokenizer/normalizer.c
@@ -39,8 +39,8 @@ vendor/iree_tokenizer_src/iree/tokenizer/normalizer/prepend.c
 vendor/iree_tokenizer_src/iree/tokenizer/normalizer/regex_replace.c
 vendor/iree_tokenizer_src/iree/tokenizer/normalizer/replace.c
 vendor/iree_tokenizer_src/iree/tokenizer/normalizer/sequence.c
-vendor/iree_tokenizer_src/iree/tokenizer/normalizer/strip.c
 vendor/iree_tokenizer_src/iree/tokenizer/normalizer/strip_accents.c
+vendor/iree_tokenizer_src/iree/tokenizer/normalizer/strip.c
 vendor/iree_tokenizer_src/iree/tokenizer/postprocessor.c
 vendor/iree_tokenizer_src/iree/tokenizer/regex/compile.c
 vendor/iree_tokenizer_src/iree/tokenizer/regex/exec.c
@@ -59,8 +59,8 @@ vendor/iree_tokenizer_src/iree/tokenizer/segmenter/split.c
 vendor/iree_tokenizer_src/iree/tokenizer/segmenter/whitespace.c
 vendor/iree_tokenizer_src/iree/tokenizer/special_tokens.c
 vendor/iree_tokenizer_src/iree/tokenizer/tokenizer.c
-vendor/iree_tokenizer_src/iree/tokenizer/vocab/vocab.c
 vendor/iree_tokenizer_src/iree/tokenizer/vocab/vocab_builder.c
 vendor/iree_tokenizer_src/iree/tokenizer/vocab/vocab_hash.c
 vendor/iree_tokenizer_src/iree/tokenizer/vocab/vocab_merge_hash.c
 vendor/iree_tokenizer_src/iree/tokenizer/vocab/vocab_trie.c
+vendor/iree_tokenizer_src/iree/tokenizer/vocab/vocab.c

@@ -1,15 +1,32 @@
 # Upstream IREE Tokenizer Bugs
 
-This document tracks bugs that the `IREE.Tokenizers` Elixir parity harness
-(`bench/validate_parity.exs`) surfaced in the vendored IREE tokenizer C
-runtime. They are **not** fixable in this package — the vendored bundle at
-`native/iree_tokenizers_native/vendor/iree_tokenizer_src/` is refreshed from
-upstream IREE via `scripts/update_iree_bundle.sh`, so any local patch is
-clobbered on refresh. The right fix lives in the upstream
-[`iree-org/iree-tokenizer-py`](https://github.com/iree-org/iree-tokenizer-py)
-repository.
+This document tracks parity failures originally surfaced by the
+`IREE.Tokenizers` Elixir parity harness (`bench/validate_parity.exs`) against
+our vendored IREE tokenizer snapshot.
 
-Pinned vendored commit: `71af3a5e41a8e265330bc693194c708cf6df4724`
+Update on this branch:
+- Fixed locally in this package:
+  - byte-level BPE decode corruption for emoji / CJK-adjacent sequences
+  - `gpt2` batch encode deadlock via parity-preserving sequential fallback
+  - SentencePiece / Llama-family `EncodeStream` chunk-boundary divergence
+  - Unigram / SentencePiece `EncodeStream.finalize/1` no-progress failure
+  - Phi-3 repeated punctuation and long-input BPE encode divergences
+  - Phi-3 `special_token_literal` id/decode parity
+  - BERT control-character whitespace classification mismatch
+  - BERT batch-path emoji mismatch
+  - tokenizer.json padding / truncation auto-application for one-shot, batch, and config-driven stream output
+  - long T5 tokenizer.json Metaspace finalize overflow on repeated inputs
+  - Gemma-style Metaspace + ByteFallback BPE stream chunk-boundary divergence via buffered finalize fallback
+- Remaining unresolved here:
+  - none in the current selected parity matrix; see the latest `bench/results/parity_report.md` for the verified state.
+- Additional verification on this branch:
+  - the benchmark-matrix rows currently published in `bench/results/model_matrix.md`
+    (`LiquidAI/LFM2.5-1.2B-Instruct`, `Qwen/Qwen3.5-9B`, `zai-org/GLM-5.1`,
+    `mistralai/Ministral-3-3B-Reasoning-2512`, and `google/gemma-4-31B-it`)
+    all passed a targeted one-shot, batch, and stream parity sweep.
+
+
+Pinned vendored commit: `af030e43d8343263a6c869eae32f958f229ff7af`
 (see `native/iree_tokenizers_native/vendor/IREE_COMMIT`).
 
 Reference implementation for parity checks: [`elixir-nx/tokenizers`][hf]
@@ -18,18 +35,22 @@ Reference implementation for parity checks: [`elixir-nx/tokenizers`][hf]
 
 [hf]: https://github.com/elixir-nx/tokenizers
 
-## How to reproduce any of these
+## How to verify the current state
 
 ```bash
 cd bench
 mix deps.get
-MODEL_FILTER="<label-from-below>" mix run validate_parity.exs
+mix run validate_parity.exs
 cat results/parity_report.md
 ```
 
+The per-bug sections below preserve the historical failure shapes observed before
+these local fixes/workarounds landed. They are retained for upstream tracking,
+not because they are expected to reproduce on the current branch.
+
 ---
 
-## 1. Byte-level BPE decoder mangles multibyte UTF-8 for emoji / CJK-adjacent sequences
+## 1. Byte-level BPE decoder mangles multibyte UTF-8 for emoji / CJK-adjacent sequences [fixed locally]
 
 **Affected models (all byte-level BPE):**
 
@@ -69,7 +90,7 @@ families on the Hub (DeepSeek, Qwen, GPT-2) on realistic prompts.
 
 ---
 
-## 2. `encode_batch/3` deadlocks for `gpt2` on mixed-length input lists
+## 2. `encode_batch/3` deadlocks for `gpt2` on mixed-length input lists [fixed locally]
 
 **Affected models:** `openai-community/gpt2`.
 
@@ -102,7 +123,7 @@ code cannot grow the buffer and returns `INTERNAL`.
 
 ---
 
-## 3. `EncodeStream.finalize/1` fails for Unigram / SentencePiece models
+## 3. `EncodeStream.finalize/1` fails for Unigram / SentencePiece models [fixed locally]
 
 **Affected models:** `google-t5/t5-small` (both `:huggingface_json` and
 `:sentencepiece_model` load paths). Any T5 / mT5 / FLAN-T5 derivative will
@@ -136,7 +157,7 @@ one-shot `IREE.Tokenizers.Tokenizer.encode/3` on the full input.
 
 ---
 
-## 4. `EncodeStream` produces different tokens than `encode/3` on SentencePiece/Llama tokenizers
+## 4. `EncodeStream` produces different tokens than `encode/3` on SentencePiece/Llama tokenizers [fixed locally]
 
 **Affected models:** `microsoft/Phi-3-mini-4k-instruct` and, by
 extension, other Llama / Mistral family tokenizers that use a
@@ -169,9 +190,12 @@ against a one-shot encode.
 
 ---
 
-## 5. Llama-SPM tokenizers over-tokenize on repeated punctuation and long mixed inputs
+## 5. Llama-SPM tokenizers over-tokenize on repeated punctuation and long mixed inputs [fixed locally]
 
 **Affected model:** `microsoft/Phi-3-mini-4k-instruct`.
+
+The tracked `special_token_literal`, `repeated_punct`, `long_repeat_ascii`,
+and `long_mixed` cases are fixed locally on this branch.
 
 **Shape of the failure**
 
@@ -198,10 +222,12 @@ than a race.
 
 ---
 
-## 6. BERT BasicTokenizer does not treat `\v`, `\f`, `\b` as whitespace
+## 6. BERT control-character handling diverged from Hugging Face BasicTokenizer semantics [fixed locally]
 
 **Affected model:** `google-bert/bert-base-uncased` (and likely every
 WordPiece tokenizer that uses BasicTokenizer's normalizer).
+
+This control-character mismatch is fixed locally on this branch.
 
 **Shape of the failure**
 
@@ -211,21 +237,30 @@ Input `"bell\x07tab\ttab vertical\vform\ftab back\bspace"` produces:
 - HF:   12 / 10 tokens
 - First diff at index 6, iree `2433`, hf `14192`
 
-HF's BasicTokenizer treats `\v`, `\f`, and `\b` as whitespace-equivalent
-and splits on them; IREE keeps them attached to the preceding word.
+The root cause was a BERT-specific whitespace/control-character classification
+mismatch in the vendored runtime. The current local fix aligns the BERT
+normalizer and segmenter with the Hugging Face behavior used by
+`elixir-nx/tokenizers`: space, `\t`, `\n`, `\r`, and Unicode separator code
+points are treated as whitespace, while other control characters continue to
+follow the BERT control-character path.
 
 **Where it lives:**
-`native/iree_tokenizers_native/vendor/iree_tokenizer_src/iree/tokenizer/normalizer.c`
-(BERT normalizer / whitespace classification).
+`native/iree_tokenizers_native/vendor/iree_tokenizer_src/iree/tokenizer/normalizer/bert.c`
+and
+`native/iree_tokenizers_native/vendor/iree_tokenizer_src/iree/tokenizer/segmenter/bert.c`.
 
 **Priority:** 🟢 low. Only affects literal control characters in input,
 which is rare in practice.
 
 ---
 
-## 7. BERT `encode_batch/3` disagrees with single `encode/3` on the `emoji` case
+## 7. BERT `encode_batch/3` disagrees with single `encode/3` on the `emoji` case [fixed locally]
 
 **Affected model:** `google-bert/bert-base-uncased`.
+
+This batch-path-only divergence is fixed locally on this branch via the same
+parity-preserving sequential `encode_batch/3` fallback that resolves the GPT-2
+batch deadlock and T5 batch mismatches.
 
 **Shape of the failure**
 
@@ -241,28 +276,24 @@ vendored C runtime.
 
 ---
 
-## 8. Tokenizer-level `padding` config in `tokenizer.json` is ignored
+## 8. Tokenizer-level `padding` config in `tokenizer.json` is ignored [fixed locally]
 
 **Affected model:** `sentence-transformers/all-MiniLM-L6-v2` (and every
 other model that sets `padding.max_length` in its `tokenizer.json`).
 
+One-shot `encode/3`, `encode_batch/3`, and config-derived stream output now
+apply tokenizer-level padding/truncation locally on this branch.
+
 **Shape of the failure**
 
 `tokenizer.json` sets `padding: max_length=128`. HF's `tokenizers`
-auto-applies this; `encode/3` returns 128 ids for every input. IREE
-returns the raw unpadded id list, so the parity harness reports `0/19`
-matching cases even though the prefix of the IREE output is byte-for-byte
-correct.
+auto-applies this; this branch now does the same for one-shot, batch, and
+config-driven stream encoding.
 
-This is arguably a documented design choice — the README steers users
-toward `IREE.Tokenizers.Encoding.Transformation` for padding. But it is a
-real parity gap with HF and should at minimum be called out in the
-README so that users who migrate from HF are not surprised.
+**Where it lives:** loader/runtime helper logic in `lib/iree/tokenizers/tokenizer.ex`
+and `lib/iree/tokenizers/encode_stream.ex`.
 
-**Where it lives:** the loader / post-processor setup; `tokenizer.rs`
-and / or the vendored config parser.
-
-**Priority:** 🟢 low. Workaround is `Encoding.Transformation.pad/2`.
+**Priority:** 🟢 low. Local parity fix is in place.
 
 ---
 
