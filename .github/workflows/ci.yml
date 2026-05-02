@@ -3,7 +3,31 @@ name: CI
 on:
   push:
     branches: ["main"]
+    paths:
+      - "**/*.ex"
+      - "**/*.exs"
+      - "mix.exs"
+      - "mix.lock"
+      - ".formatter.exs"
+      - ".tool-versions"
+      - "config/**"
+      - "lib/**"
+      - "test/**"
+      - "native/**"
+      - "scripts/**"
   pull_request:
+    paths:
+      - "**/*.ex"
+      - "**/*.exs"
+      - "mix.exs"
+      - "mix.lock"
+      - ".formatter.exs"
+      - ".tool-versions"
+      - "config/**"
+      - "lib/**"
+      - "test/**"
+      - "native/**"
+      - "scripts/**"
 
 jobs:
   format:
