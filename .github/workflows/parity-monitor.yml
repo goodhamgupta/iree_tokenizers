@@ -1,0 +1,81 @@
+name: Parity monitor
+
+on:
+  schedule:
+    # Mondays 06:00 UTC
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "How many trending text models to check"
+        required: false
+        default: "10"
+      fetch_limit:
+        description: "How many raw HF API entries to fetch before filtering"
+        required: false
+        default: "50"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    env:
+      IREE_TOKENIZERS_BUILD: "1"
+      HF_TOKEN: ${{ secrets.HF_TOKEN }}
+      LIMIT: ${{ inputs.limit || '10' }}
+      FETCH_LIMIT: ${{ inputs.fetch_limit || '50' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.1.1"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Fetch root deps
+        run: mix deps.get
+
+      - name: Fetch bench deps
+        run: mix deps.get
+        working-directory: bench
+
+      - name: Fetch trending text models
+        run: mix run fetch_trending_models.exs
+        working-directory: bench
+
+      - name: Run parity matrix
+        env:
+          MODELS_JSON: results/trending_models.json
+        run: mix run validate_parity.exs
+        working-directory: bench
+
+      - name: Upload parity artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-monitor-${{ github.run_id }}
+          path: |
+            bench/results/trending_models.json
+            bench/results/parity_report.md
+            bench/results/parity_report.json
+
+      - name: Install uv
+        if: success() || failure()
+        uses: astral-sh/setup-uv@v6
+
+      - name: File / refresh GitHub issues for failing models
+        if: success() || failure()
+        env:
+          REPORT_PATH: bench/results/parity_report.json
+          TRENDING_PATH: bench/results/trending_models.json
+          UPSTREAM_BUGS_PATH: docs/UPSTREAM_BUGS.md
+          PARITY_LABEL: parity-failure
+          WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: uv run .github/scripts/file_parity_issues.py
