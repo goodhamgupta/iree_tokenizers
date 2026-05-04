@@ -1,0 +1,384 @@
+#!/usr/bin/env -S uv run --quiet
+# /// script
+# requires-python = ">=3.12"
+# dependencies = []
+# ///
+"""
+Reads bench/results/parity_report.json (and the trending model list) and
+opens / refreshes a GitHub issue per failing model.
+
+Invoked from the parity-monitor workflow. Uses the preinstalled `gh` CLI for
+all GitHub API operations so no extra Python deps are required — `GH_TOKEN`
+must be set in the environment (the workflow wires it from `GITHUB_TOKEN`).
+
+Env vars:
+  REPORT_PATH         default: bench/results/parity_report.json
+  TRENDING_PATH       default: bench/results/trending_models.json
+  UPSTREAM_BUGS_PATH  default: docs/UPSTREAM_BUGS.md
+  PARITY_LABEL        default: parity-failure
+  WORKFLOW_RUN_URL    provided by the workflow
+  GH_TOKEN            required (from secrets.GITHUB_TOKEN)
+  GH_REPO             owner/repo (provided by GitHub Actions as GITHUB_REPOSITORY)
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main() -> int:
+    report_path = Path(os.environ.get("REPORT_PATH", "bench/results/parity_report.json"))
+    trending_path = Path(
+        os.environ.get("TRENDING_PATH", "bench/results/trending_models.json")
+    )
+    upstream_path = Path(os.environ.get("UPSTREAM_BUGS_PATH", "docs/UPSTREAM_BUGS.md"))
+    label = os.environ.get("PARITY_LABEL", "parity-failure")
+    run_url = os.environ.get("WORKFLOW_RUN_URL", "(no run URL)")
+    repo = os.environ.get("GH_REPO") or os.environ.get("GITHUB_REPOSITORY")
+
+    if not repo:
+        print("error: GH_REPO / GITHUB_REPOSITORY is required", file=sys.stderr)
+        return 1
+
+    report = json.loads(report_path.read_text())
+    trending = (
+        json.loads(trending_path.read_text()) if trending_path.exists() else []
+    )
+    upstream = upstream_path.read_text() if upstream_path.exists() else ""
+    trending_by_label = {m["label"]: m for m in trending}
+
+    ensure_label(repo, label)
+
+    failures = [m for m in report.get("models", []) if is_failure(m)]
+    print(f"Found {len(failures)} failing models out of {len(report.get('models', []))}.")
+
+    summary_lines: list[str] = []
+
+    for model in failures:
+        repo_meta = trending_by_label.get(model["label"])
+        known_bug = is_known_upstream_bug(model["label"], upstream)
+        title = f"parity: {model['label']}"
+        body = render_issue_body(
+            model=model, repo_meta=repo_meta, known_bug=known_bug, run_url=run_url
+        )
+
+        existing = find_existing_issue(repo, title, label)
+
+        if existing:
+            state = existing["state"].lower()
+            print(f"  exists: #{existing['number']} for {model['label']} (state={state})")
+            comment_on_issue(repo, existing["number"], body)
+            summary_lines.append(
+                f"commented on {state} #{existing['number']} ({model['label']})"
+            )
+        elif known_bug:
+            print(f"  {model['label']}: known upstream bug, skipping issue creation")
+            summary_lines.append(f"skipped {model['label']} (known upstream bug)")
+        else:
+            number = create_issue(repo, title, body, [label])
+            print(f"  opened #{number} for {model['label']}")
+            summary_lines.append(f"opened #{number} ({model['label']})")
+
+    write_step_summary(summary_lines)
+    return 0
+
+
+def is_failure(model: dict) -> bool:
+    if model.get("status") == "skipped":
+        return False
+    if model.get("status") == "load_error":
+        return True
+    return model.get("all_ok") is False
+
+
+def run_gh(args: list[str], *, input: str | None = None) -> subprocess.CompletedProcess:
+    """Run a `gh` command, surfacing stderr on failure for fast CI debugging."""
+    try:
+        return subprocess.run(
+            args, check=True, capture_output=True, text=True, input=input
+        )
+    except subprocess.CalledProcessError as e:
+        sys.stderr.write(
+            f"\n`gh` command failed (exit {e.returncode}):\n"
+            f"  args:   {args}\n"
+            f"  stdout: {e.stdout!r}\n"
+            f"  stderr: {e.stderr!r}\n"
+        )
+        raise
+
+
+def ensure_label(repo: str, label: str) -> None:
+    result = run_gh(
+        ["gh", "label", "list", "--repo", repo, "--json", "name", "--limit", "200"]
+    )
+    existing = {entry["name"] for entry in json.loads(result.stdout)}
+    if label in existing:
+        return
+
+    run_gh(
+        [
+            "gh",
+            "label",
+            "create",
+            label,
+            "--repo",
+            repo,
+            "--color",
+            "d73a4a",
+            "--description",
+            "IREE.Tokenizers vs elixir-nx/tokenizers parity regression",
+        ]
+    )
+
+
+def find_existing_issue(repo: str, title: str, label: str) -> dict | None:
+    # `gh issue list --search` does a title substring match. We filter to an
+    # exact title match locally so we never collide with similarly-titled
+    # issues (e.g. `parity: foo/bar` vs `parity: foo/bar-2`).
+    result = run_gh(
+        [
+            "gh",
+            "issue",
+            "list",
+            "--repo",
+            repo,
+            "--label",
+            label,
+            "--state",
+            "all",
+            "--search",
+            f'"{title}" in:title',
+            "--json",
+            "number,title,state",
+            "--limit",
+            "50",
+        ]
+    )
+    items = json.loads(result.stdout)
+    for item in items:
+        if item["title"] == title:
+            return item
+    return None
+
+
+def comment_on_issue(repo: str, number: int, body: str) -> None:
+    run_gh(
+        ["gh", "issue", "comment", str(number), "--repo", repo, "--body-file", "-"],
+        input=body,
+    )
+
+
+def create_issue(repo: str, title: str, body: str, labels: list[str]) -> int:
+    result = run_gh(
+        [
+            "gh",
+            "issue",
+            "create",
+            "--repo",
+            repo,
+            "--title",
+            title,
+            "--label",
+            ",".join(labels),
+            "--body-file",
+            "-",
+        ],
+        input=body,
+    )
+    # `gh issue create` prints the issue URL on stdout.
+    url = result.stdout.strip().splitlines()[-1]
+    return int(url.rsplit("/", 1)[-1])
+
+
+def is_known_upstream_bug(label: str, upstream_md: str) -> bool:
+    if not upstream_md:
+        return False
+    pattern = re.compile(rf"`{re.escape(label)}`")
+    return bool(pattern.search(upstream_md))
+
+
+def render_issue_body(
+    *,
+    model: dict,
+    repo_meta: dict | None,
+    known_bug: bool,
+    run_url: str,
+) -> str:
+    lines: list[str] = []
+    lines.append("Automated parity regression filed by `parity-monitor`.")
+    lines.append("")
+    lines.append(f"- Workflow run: {run_url}")
+    if repo_meta:
+        lines.append(f"- Repo: `{repo_meta['repo']}`")
+        lines.append(f"- Format: `{repo_meta['format']}`")
+        if repo_meta.get("pipeline_tag"):
+            lines.append(f"- Pipeline tag: `{repo_meta['pipeline_tag']}`")
+        score = repo_meta.get("trending_score")
+        if isinstance(score, (int, float)):
+            lines.append(f"- Trending score: {score}")
+        if repo_meta.get("gated"):
+            lines.append("- Gated: yes (HF_TOKEN required)")
+    if known_bug:
+        lines.append("- Known upstream bug: yes (matched `docs/UPSTREAM_BUGS.md`)")
+    lines.append("")
+
+    repo_id = (repo_meta or {}).get("repo") or model["label"]
+
+    if model.get("status") == "load_error":
+        lines.append("### Load error")
+        lines.append("")
+        lines.append("```")
+        lines.append(model.get("reason") or "(no reason)")
+        lines.append("```")
+        lines.append("")
+        lines.append("### Reproduction")
+        lines.append("")
+        lines.append("```elixir")
+        lines.append(f'{{:ok, t}} = IREE.Tokenizers.Tokenizer.from_pretrained("{repo_id}")')
+        lines.append("```")
+        return "\n".join(lines)
+
+    lines.append("### Summary")
+    lines.append("")
+    lines.append(f"- Cases passed: {model['passed']}/{model['total']}")
+
+    batch = model.get("batch") or {}
+    if batch.get("status") == "error":
+        lines.append(f"- Batch encode: **ERROR** {batch.get('reason')}")
+    elif batch.get("mismatches"):
+        indices = ", ".join(str(i) for i in batch["mismatches"])
+        lines.append(f"- Batch encode: **MISMATCH** at indices [{indices}]")
+    elif batch:
+        lines.append("- Batch encode: ok")
+
+    stream = model.get("stream") or {}
+    if stream.get("status") == "error":
+        lines.append(f"- Stream encode: **ERROR** {stream.get('reason')}")
+    elif stream.get("ids_equal") is False:
+        lines.append(
+            "- Stream encode: **MISMATCH** "
+            f"(streamed={stream.get('streamed_len')}, oneshot={stream.get('oneshot_len')}, "
+            f"first_diff={json.dumps(stream.get('first_diff'))})"
+        )
+    elif stream:
+        lines.append("- Stream encode: ok")
+    lines.append("")
+
+    failing_cases = model.get("failing_cases") or []
+    if failing_cases:
+        lines.append("### Failing cases")
+        lines.append("")
+        lines.append(
+            "| case | bytes | add_special | iree_ids | hf_ids | ids= | decoded= | first_diff | error |"
+        )
+        lines.append("| --- | ---: | :---: | ---: | ---: | :---: | :---: | --- | --- |")
+        for c in failing_cases:
+            for v in c.get("variants", []):
+                if not v.get("error") and v.get("ids_equal") and v.get("decoded_equal"):
+                    continue
+                fd = v.get("first_diff")
+                fd_str = (
+                    f"idx={fd['index']}, iree={fd['iree']}, hf={fd['hf']}"
+                    if fd
+                    else "-"
+                )
+                lines.append(
+                    "| {name} | {bytes} | {add_special} | {iree} | {hf} | {ids} | {decoded} | {fd} | {err} |".format(
+                        name=c.get("name", ""),
+                        bytes=c.get("bytes", ""),
+                        add_special=v.get("add_special"),
+                        iree=v.get("iree_ids_len") if v.get("iree_ids_len") is not None else "-",
+                        hf=v.get("hf_ids_len") if v.get("hf_ids_len") is not None else "-",
+                        ids="✅" if v.get("ids_equal") else "❌",
+                        decoded="✅" if v.get("decoded_equal") else "❌",
+                        fd=fd_str,
+                        err=v.get("error") or "",
+                    )
+                )
+        lines.append("")
+
+    lines.append("### Reproduction")
+    lines.append("")
+    lines.append("```elixir")
+    lines.append("# cd bench && HF_TOKEN=hf_... mix run -e '")
+    lines.append('Mix.Task.run("app.start")')
+    lines.append("alias IREE.Tokenizers.Tokenizer, as: IREE")
+    lines.append("alias Tokenizers.Tokenizer, as: HF")
+    lines.append("alias Tokenizers.Encoding, as: HFEnc")
+    lines.append("")
+    sp_suffix = (
+        ", format: :sentencepiece_model"
+        if (repo_meta or {}).get("format") == "sentencepiece_model"
+        else ""
+    )
+    lines.append(f'{{:ok, iree}} = IREE.from_pretrained("{repo_id}"{sp_suffix})')
+    lines.append(f'{{:ok, hf}}   = HF.from_pretrained("{repo_id}")')
+
+    first_case = failing_cases[0] if failing_cases else None
+    first_failure = None
+    if first_case:
+        for v in first_case.get("variants", []):
+            if v.get("error") or not v.get("ids_equal") or not v.get("decoded_equal"):
+                first_failure = v
+                break
+
+    if first_case and first_failure:
+        add_special = str(first_failure["add_special"]).lower()
+        lines.append("")
+        lines.append(
+            f"# input: {first_case['name']}, "
+            f"add_special_tokens: {add_special}, "
+            f"bytes: {first_case.get('bytes')}"
+        )
+        preview = first_case.get("text_preview") or ""
+        # ensure_ascii=False keeps CJK / emoji literals readable; the JSON
+        # quoting rules align with Elixir's own string literals.
+        lines.append(f"text = {json.dumps(preview, ensure_ascii=False)}")
+        lines.append(
+            f"{{:ok, ie}} = IREE.encode(iree, text, add_special_tokens: {add_special})"
+        )
+        lines.append(
+            f"{{:ok, he}} = HF.encode(hf, text, add_special_tokens: {add_special})"
+        )
+        lines.append("ie.ids == HFEnc.get_ids(he)")
+    else:
+        lines.append("")
+        lines.append("# Failure occurred in batch / stream path rather than a single case.")
+        lines.append("# Re-run the parity matrix for this model to reproduce.")
+    lines.append("# '")
+    lines.append("```")
+    lines.append("")
+    lines.append("Or, run the full parity matrix for this single model:")
+    lines.append("")
+    lines.append("```bash")
+    lines.append("cd bench")
+    lines.append(
+        f'HF_TOKEN=hf_... MODEL_FILTER={shlex.quote(model["label"])} mix run validate_parity.exs'
+    )
+    lines.append("```")
+
+    return "\n".join(lines)
+
+
+def write_step_summary(lines: list[str]) -> None:
+    summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not summary_path:
+        return
+
+    with open(summary_path, "a", encoding="utf-8") as f:
+        if lines:
+            f.write("## Parity monitor — issue actions\n\n")
+            for line in lines:
+                f.write(f"- {line}\n")
+        else:
+            f.write("## Parity monitor\n\nAll monitored models passed.\n")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

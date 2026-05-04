@@ -30,6 +30,12 @@ defmodule Parity do
       MODEL_FILTER="google-t5/t5-small (json)" mix run validate_parity.exs
       # or, with HF credentials for gated repos
       HF_TOKEN=hf_... mix run validate_parity.exs
+      # or, drive the model list from a JSON file (used by parity-monitor CI)
+      MODELS_JSON=results/trending_models.json mix run validate_parity.exs
+
+  In addition to `bench/results/parity_report.md`, the runner also emits
+  `bench/results/parity_report.json` for downstream tooling (the
+  parity-monitor workflow uses it to file/refresh GitHub issues).
   """
 
   @models [
@@ -93,11 +99,14 @@ defmodule Parity do
     results_dir = Path.expand("results", __DIR__)
     File.mkdir_p!(results_dir)
     report_path = Path.join(results_dir, "parity_report.md")
+    json_report_path = Path.join(results_dir, "parity_report.json")
 
     opts = Support.pretrained_opts()
     token_present? = Keyword.has_key?(opts, :token)
 
-    models = filter_models(@models, System.get_env("MODEL_FILTER"))
+    models =
+      load_models()
+      |> filter_models(System.get_env("MODEL_FILTER"))
 
     rows =
       Enum.map(models, fn model ->
@@ -108,8 +117,47 @@ defmodule Parity do
     summary = render_summary(rows)
     File.write!(report_path, summary)
     IO.puts("\nWrote #{report_path}")
+
+    File.write!(json_report_path, encode_json_report(rows))
+    IO.puts("Wrote #{json_report_path}")
+
     IO.puts("\n" <> short_console_table(rows))
   end
+
+  defp load_models do
+    case System.get_env("MODELS_JSON") do
+      nil ->
+        @models
+
+      "" ->
+        @models
+
+      path ->
+        IO.puts("Loading model list from #{path}")
+        path |> File.read!() |> Jason.decode!() |> Enum.map(&decode_model_entry/1)
+    end
+  end
+
+  defp decode_model_entry(entry) do
+    repo = Map.fetch!(entry, "repo")
+    label = Map.get(entry, "label", repo)
+
+    format =
+      case Map.get(entry, "format", "huggingface_json") do
+        "huggingface_json" -> :huggingface_json
+        "sentencepiece_model" -> :sentencepiece_model
+        other -> raise "unsupported format in MODELS_JSON for #{repo}: #{inspect(other)}"
+      end
+
+    base = %{label: label, repo: repo, format: format}
+
+    base
+    |> maybe_put(:gated, Map.get(entry, "gated", false))
+    |> maybe_put(:iree_only, Map.get(entry, "iree_only", false))
+  end
+
+  defp maybe_put(map, _key, false), do: map
+  defp maybe_put(map, key, value), do: Map.put(map, key, value)
 
   defp filter_models(models, nil), do: models
 
@@ -331,6 +379,9 @@ defmodule Parity do
     %{
       name: name,
       bytes: byte_size(text),
+      # Truncate so we don't bloat the JSON report or issue body for the
+      # ~180KB long_repeat_ascii / long_cjk / long_mixed cases.
+      text_preview: truncate_text(text, 2_048),
       variants: variants,
       all_ok:
         Enum.all?(variants, fn v ->
@@ -395,6 +446,15 @@ defmodule Parity do
     end)
   end
 
+  defp truncate_text(text, max_bytes) do
+    if byte_size(text) <= max_bytes do
+      text
+    else
+      <<head::binary-size(max_bytes), _::binary>> = text
+      head <> "…[truncated, full size #{byte_size(text)} bytes]"
+    end
+  end
+
   defp first_diff(a, b) do
     do_first_diff(a, b, 0)
   end
@@ -405,6 +465,103 @@ defmodule Parity do
 
   defp do_first_diff([x | xs], [y | ys], i) do
     if x == y, do: do_first_diff(xs, ys, i + 1), else: %{index: i, iree: x, hf: y}
+  end
+
+  defp encode_json_report(rows) do
+    payload = %{
+      "generated_at" => DateTime.utc_now() |> DateTime.to_iso8601(),
+      "models" => Enum.map(rows, &row_to_json/1)
+    }
+
+    Jason.encode!(payload, pretty: true) <> "\n"
+  end
+
+  defp row_to_json(%{status: :skipped} = row) do
+    %{"label" => row.label, "status" => "skipped", "reason" => row.reason}
+  end
+
+  defp row_to_json(%{status: :load_error} = row) do
+    %{"label" => row.label, "status" => "load_error", "reason" => row.reason}
+  end
+
+  defp row_to_json(%{status: :ok} = row) do
+    failing_cases =
+      row.cases
+      |> Enum.reject(& &1.all_ok)
+      |> Enum.map(&case_to_json/1)
+
+    %{
+      "label" => row.label,
+      "status" => "ok",
+      "passed" => Enum.count(row.cases, & &1.all_ok),
+      "total" => length(row.cases),
+      "batch" => batch_to_json(row.batch),
+      "stream" => stream_to_json(row.stream),
+      "failing_cases" => failing_cases,
+      "all_ok" =>
+        Enum.all?(row.cases, & &1.all_ok) and
+          match?(%{status: :ok, mismatches: []}, row.batch) and
+          match?(%{status: :ok, ids_equal: true}, row.stream)
+    }
+  end
+
+  defp case_to_json(c) do
+    %{
+      "name" => c.name,
+      "bytes" => c.bytes,
+      "text_preview" => Map.get(c, :text_preview),
+      "variants" =>
+        Enum.map(c.variants, fn v ->
+          %{
+            "add_special" => v.add_special,
+            "iree_ids_len" => v.iree_ids_len,
+            "hf_ids_len" => v.hf_ids_len,
+            "ids_equal" => v.ids_equal,
+            "decoded_equal" => v.decoded_equal,
+            "iree_roundtrip" => v.iree_roundtrip,
+            "hf_roundtrip" => v.hf_roundtrip,
+            "first_diff" => first_diff_to_json(v.first_diff),
+            "iree_head" => v.iree_head,
+            "hf_head" => v.hf_head,
+            "error" => v.error
+          }
+        end)
+    }
+  end
+
+  defp first_diff_to_json(nil), do: nil
+
+  defp first_diff_to_json(%{index: i, iree: iree, hf: hf}) do
+    %{
+      "index" => i,
+      "iree" => stringify_diff_value(iree),
+      "hf" => stringify_diff_value(hf)
+    }
+  end
+
+  defp stringify_diff_value(:eol), do: "eol"
+  defp stringify_diff_value(value), do: value
+
+  defp batch_to_json(%{status: :ok, count: count, mismatches: mismatches}) do
+    %{"status" => "ok", "count" => count, "mismatches" => mismatches}
+  end
+
+  defp batch_to_json(%{status: :error, reason: reason}) do
+    %{"status" => "error", "reason" => reason}
+  end
+
+  defp stream_to_json(%{status: :ok, ids_equal: equal} = stream) do
+    %{
+      "status" => "ok",
+      "ids_equal" => equal,
+      "streamed_len" => Map.get(stream, :streamed_len),
+      "oneshot_len" => Map.get(stream, :oneshot_len),
+      "first_diff" => first_diff_to_json(Map.get(stream, :first_diff))
+    }
+  end
+
+  defp stream_to_json(%{status: :error, reason: reason}) do
+    %{"status" => "error", "reason" => reason}
   end
 
   defp render_summary(rows) do
