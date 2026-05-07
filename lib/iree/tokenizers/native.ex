@@ -34,6 +34,7 @@ defmodule IREE.Tokenizers.Native do
   def tokenizer_encode_batch(_tokenizer, _texts, _opts), do: err()
   def tokenizer_decode(_tokenizer, _ids, _opts), do: err()
   def tokenizer_decode_batch(_tokenizer, _batch_ids, _opts), do: err()
+  def tokenizer_decode_batch_u32(_tokenizer, _batch_ids, _opts), do: err()
   def tokenizer_vocab_size(_tokenizer), do: err()
   def tokenizer_vocab_capacity(_tokenizer), do: err()
   def tokenizer_model_type(_tokenizer), do: err()
