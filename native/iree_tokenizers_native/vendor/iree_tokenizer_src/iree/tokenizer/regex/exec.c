@@ -820,21 +820,29 @@ static inline bool iree_tokenizer_regex_update_best_candidate(
     }
   }
 
-  // Check if we can commit: the best branch is no longer accepting AND
-  // no higher-priority branches can take over.
+  // Check if we can commit: the best branch is no longer alive (cannot reach
+  // any further accepting state) AND no higher-priority branches can win.
   // Higher priority = lower branch index.
   if (state->best_branch_idx < 64) {
     uint64_t alive = dfa->alive_branches[dfa_state];
     uint64_t higher_priority_mask = (1ULL << state->best_branch_idx) - 1;
+    uint64_t best_branch_mask = 1ULL << state->best_branch_idx;
 
     // Commit when:
-    // 1. No higher-priority branches are alive (they can't win anymore)
-    // 2. The best branch is no longer ACCEPTING at this state (it accepted
-    //    earlier and the accepting path has died, even if other paths remain)
-    uint64_t best_branch_mask = 1ULL << state->best_branch_idx;
-    bool best_branch_accepting = (accepting & best_branch_mask) != 0;
-
-    if ((alive & higher_priority_mask) == 0 && !best_branch_accepting) {
+    // 1. No higher-priority branches are alive (they can't win anymore).
+    // 2. The best branch is also dead — i.e., its DFA paths cannot reach any
+    //    further accepting state for THIS branch, regardless of additional
+    //    input. We must NOT commit just because the branch is non-accepting
+    //    at the current state: a branch may transit through non-accepting
+    //    states (e.g. `\s*[\r\n]+` after consuming `\n`, then ` ` puts us back
+    //    in the `\s*` body) and re-accept later when more input arrives.
+    //
+    // PCRE-leftmost-first semantics with greedy backtracking require letting
+    // the highest-priority branch run as long as the engine can still extend
+    // it. When the branch finally dies, the last recorded best_match_end is
+    // its longest accept and the commit is safe.
+    bool best_branch_alive = (alive & best_branch_mask) != 0;
+    if ((alive & higher_priority_mask) == 0 && !best_branch_alive) {
       return true;
     }
   }
