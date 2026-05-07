@@ -6,6 +6,7 @@ our vendored IREE tokenizer snapshot.
 
 Update on this branch:
 - Fixed locally in this package:
+  - **Regex DFA branch-tracking premature-commit on `\s*[\r\n]+|\s+(?!\S)|\s+`** (vendor fix in `regex/exec.c`). When the highest-priority branch is non-lookahead and transitions through a non-accepting state (e.g. consuming a space inside `\s*` after just having matched `[\r\n]+`), the engine was committing the earlier 1-character accept instead of waiting for the branch to either die or re-accept. Affected long-context HF parity for at least DeepSeek-V3/V3.2/R1, GLM-4.7/5, MiniMax-M2.1/2.5, Qwen3-235B / Qwen3-Next / Qwen3.5, Devstral-2-24B, Nemotron-3-Nano, gpt-oss-120b. Fix: change the commit predicate from `!best_branch_accepting` to `!best_branch_alive` (the best branch must be dead, not merely non-accepting at this state). See the comment block at `iree_tokenizer_regex_update_best_candidate`.
   - byte-level BPE decode corruption for emoji / CJK-adjacent sequences
   - `gpt2` batch encode deadlock via parity-preserving sequential fallback
   - SentencePiece / Llama-family `EncodeStream` chunk-boundary divergence
