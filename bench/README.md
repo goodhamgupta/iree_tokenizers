@@ -30,6 +30,41 @@ and long encode/decode workloads.
 generates latency and speedup SVG charts similar to the ZML blog post. Set
 `HF_TOKEN` if any benchmark target requires authentication.
 
+## LongBench-v2: fastokens vs IREE.Tokenizers
+
+Long-context comparison against [`crusoecloud/fastokens`](https://github.com/crusoecloud/fastokens),
+exercising prompts drawn from [`zai-org/LongBench-v2`](https://huggingface.co/datasets/zai-org/LongBench-v2).
+Each model is evaluated over five token-count buckets — 1K, 4K, 16K, 64K,
+100K — with three samples per bucket and 3 warmup + 10 timed iterations per
+sample.
+
+The harness is split in two so each library times the *exact same* byte
+strings:
+
+```bash
+# 1. Time fastokens, persist the bucketed prompt corpus + texts/<sha>.txt cache.
+./bench/longbench/run_fastokens.py
+
+# 2. Time IREE.Tokenizers on the same inputs.
+cd bench && mix run longbench_compare.exs
+
+# 3. Join both result files and emit charts + summary.
+./bench/longbench/plot.py
+```
+
+Outputs land under `bench/results/longbench/`:
+
+- `inputs.jsonl`, `texts/<sha1>.txt` — shared prompt corpus
+- `fastokens.json`, `iree.json` — per-(model, bucket, sample) timings
+- `per_model/<model>.png` — per-model latency + speedup charts
+- `aggregate_latency.png`, `aggregate_speedup_heatmap.png`, `summary.md`
+
+`MODEL_FILTER="deepseek-ai/DeepSeek-V3,Qwen/Qwen3-Next-80B-A3B-Instruct"` works
+as a comma-separated filter on the Python side; the Elixir runner simply
+processes whatever models appear in `inputs.jsonl`. The Python script picks up
+the cached HF token automatically; the Elixir runner reads `HF_TOKEN`,
+falling back to `~/.cache/huggingface/token`.
+
 ## Parity validation
 
 `validate_parity.exs` is a regression runner that checks encoder, decoder,
