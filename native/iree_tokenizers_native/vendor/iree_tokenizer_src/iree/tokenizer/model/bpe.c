@@ -176,20 +176,21 @@ iree_status_t iree_tokenizer_bpe_model_allocate(
     // Vocab capacity for backtracking table sizing.
     model->vocab_capacity = iree_tokenizer_vocab_capacity(vocab);
 
-    // Backtracking path capacities.
-    // Segments up to this size use the O(n) backtracking algorithm.
-    // Larger segments fall back to the O(n log L) window+heap path.
-    // Capped at 4095 so the bitfield (ceil_div(4096, 64) = 64 words) fits in
-    // a single uint64_t dirty mask for O(1) amortized per-segment init.
-    iree_host_size_t min_backtrack = 0;
-    if (!iree_host_size_checked_mul(16, model->max_token_length,
-                                    &min_backtrack)) {
-      // Overflow implies very large token length; clamp to maximum.
-      min_backtrack = 4095;
-    }
-    if (min_backtrack < 2048) min_backtrack = 2048;
-    if (min_backtrack > 4095) min_backtrack = 4095;
-    model->max_backtrack_segment_bytes = min_backtrack;
+    // Backtracking path is disabled: the canonical BPE algorithm in the
+    // window+heap path is the source of truth for HF parity. The backtracking
+    // algorithm relies on context-free reachability tables that mis-decide a
+    // small-but-pervasive set of tokens (e.g., DeepSeek `induces`,
+    // Qwen3 `pacaeval`, gpt-oss `downsampling`) where canonical BPE prefers a
+    // longer prefix that the static reachability tables incorrectly classify
+    // as preempted. Forcing all segments through the heap path closes that
+    // gap. The few-bytes-per-segment case has slightly higher constant-factor
+    // overhead (one heap entry per merge) but remains O(n log L), and it is
+    // the same path large segments already exercise.
+    //
+    // We still allocate at least one byte of backtrack state so empty
+    // segments (segment.size == 0) take the trivially-empty fast path
+    // without dereferencing zero-sized buffers.
+    model->max_backtrack_segment_bytes = 0;
     // Stack holds at most one token per byte (worst case: all single-byte
     // tokens).
     model->backtrack_stack_capacity = model->max_backtrack_segment_bytes;
