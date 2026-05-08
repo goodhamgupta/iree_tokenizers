@@ -437,7 +437,9 @@ pub fn tokenizer_decode_batch_u32<'a>(
     if tokenizer.resource.decode_strategy == DecodeStrategy::SentencePieceBpe {
         return id_slices
             .iter()
-            .map(|ids| decode_sentencepiece_bpe(&tokenizer.resource, ids, options.skip_special_tokens))
+            .map(|ids| {
+                decode_sentencepiece_bpe(&tokenizer.resource, ids, options.skip_special_tokens)
+            })
             .collect();
     }
 

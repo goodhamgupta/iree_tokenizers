@@ -58,12 +58,9 @@ defmodule IREETokenizers.BpeRegressionTest do
      "baseline (no merge issue)"},
     {"deepseek-ai/DeepSeek-V3", "constructions", ["const", "ructions"],
      "baseline (no merge issue)"},
-    {"deepseek-ai/DeepSeek-V3", "directly", ["direct", "ly"],
-     "baseline (no merge issue)"},
-    {"deepseek-ai/DeepSeek-V3", "direction", ["direction"],
-     "baseline whole-word match"},
-    {"deepseek-ai/DeepSeek-V3", "creativity", ["cre", "ativity"],
-     "baseline DeepSeek (matching)"}
+    {"deepseek-ai/DeepSeek-V3", "directly", ["direct", "ly"], "baseline (no merge issue)"},
+    {"deepseek-ai/DeepSeek-V3", "direction", ["direction"], "baseline whole-word match"},
+    {"deepseek-ai/DeepSeek-V3", "creativity", ["cre", "ativity"], "baseline DeepSeek (matching)"}
 
     # NOTE: The following cases still fail and are NOT included as
     # passing tests yet. They need a more principled "context-aware
