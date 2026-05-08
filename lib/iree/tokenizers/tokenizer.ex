@@ -390,20 +390,49 @@ defmodule IREE.Tokenizers.Tokenizer do
   def decode_batch(%__MODULE__{} = tokenizer, batch_ids, opts) when is_list(batch_ids) do
     opts = Keyword.validate!(opts, skip_special_tokens: true)
 
-    case Enum.find(batch_ids, &(not is_list(&1))) do
-      nil ->
-        with {:ok, texts} <-
-               IREE.Tokenizers.Native.tokenizer_decode_batch(tokenizer, batch_ids, opts) do
-          {:ok, texts}
-        end
+    case classify_decode_batch_input(batch_ids) do
+      :binaries ->
+        IREE.Tokenizers.Native.tokenizer_decode_batch_u32(tokenizer, batch_ids, opts)
 
-      _ ->
-        {:error, {:invalid_argument, "expected a list of token id lists"}}
+      :lists ->
+        # Pack each integer list into a u32-LE binary before crossing the NIF
+        # boundary. Iterating a `Vec<Vec<i32>>` rustler decoder over scattered
+        # cons cells is highly heap-layout sensitive (4–6× slowdowns observed
+        # post-`encode_batch`); binary input avoids that traversal entirely.
+        binaries = Enum.map(batch_ids, &pack_u32/1)
+        IREE.Tokenizers.Native.tokenizer_decode_batch_u32(tokenizer, binaries, opts)
+
+      :invalid ->
+        {:error, {:invalid_argument, "expected a list of token id lists or u32 binaries"}}
     end
   end
 
   def decode_batch(%__MODULE__{}, _batch_ids, _opts),
-    do: {:error, {:invalid_argument, "expected a list of token id lists"}}
+    do: {:error, {:invalid_argument, "expected a list of token id lists or u32 binaries"}}
+
+  defp classify_decode_batch_input([]), do: :lists
+
+  defp classify_decode_batch_input(batch) do
+    Enum.reduce_while(batch, nil, fn entry, acc ->
+      kind =
+        cond do
+          is_list(entry) -> :lists
+          is_binary(entry) -> :binaries
+          true -> :invalid
+        end
+
+      cond do
+        kind == :invalid -> {:halt, :invalid}
+        acc == nil -> {:cont, kind}
+        acc == kind -> {:cont, kind}
+        true -> {:halt, :invalid}
+      end
+    end)
+  end
+
+  defp pack_u32(ids) when is_list(ids) do
+    for id <- ids, into: <<>>, do: <<id::unsigned-little-32>>
+  end
 
   @doc """
   Returns the number of active vocabulary entries.

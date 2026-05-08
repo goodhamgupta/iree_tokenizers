@@ -6,6 +6,7 @@ our vendored IREE tokenizer snapshot.
 
 Update on this branch:
 - Fixed locally in this package:
+  - **Regex DFA branch-tracking premature-commit on `\s*[\r\n]+|\s+(?!\S)|\s+`** (vendor fix in `regex/exec.c`). When the highest-priority branch is non-lookahead and transitions through a non-accepting state (e.g. consuming a space inside `\s*` after just having matched `[\r\n]+`), the engine was committing the earlier 1-character accept instead of waiting for the branch to either die or re-accept. Affected long-context HF parity for at least DeepSeek-V3/V3.2/R1, GLM-4.7/5, MiniMax-M2.1/2.5, Qwen3-235B / Qwen3-Next / Qwen3.5, Devstral-2-24B, Nemotron-3-Nano, gpt-oss-120b. Fix: change the commit predicate from `!best_branch_accepting` to `!best_branch_alive` (the best branch must be dead, not merely non-accepting at this state). See the comment block at `iree_tokenizer_regex_update_best_candidate`.
   - byte-level BPE decode corruption for emoji / CJK-adjacent sequences
   - `gpt2` batch encode deadlock via parity-preserving sequential fallback
   - SentencePiece / Llama-family `EncodeStream` chunk-boundary divergence
@@ -18,7 +19,28 @@ Update on this branch:
   - long T5 tokenizer.json Metaspace finalize overflow on repeated inputs
   - Gemma-style Metaspace + ByteFallback BPE stream chunk-boundary divergence via buffered finalize fallback
 - Remaining unresolved here:
-  - none in the current selected parity matrix; see the latest `bench/results/parity_report.md` for the verified state.
+  - **None on the BPE long-context parity axis.** End-to-end LongBench-v2
+    byte-equality vs HF AutoTokenizer is now **119/119** across all 14
+    long-context models (DeepSeek-V3/V3.2/R1, Qwen3-Next-Thinking/Instruct,
+    Qwen3-235B, Qwen3.5-397B, MiniMax-M2.1/M2.5, Devstral-2-24B,
+    Nemotron-3-Nano, gpt-oss-120b, GLM-4.7, GLM-5). The fix routes every
+    segment through the canonical-BPE min-heap path (`bpe_window.c` /
+    `bpe_heap.c`) instead of the heuristic backtracking algorithm
+    (`bpe_backtrack.c`), by setting `max_backtrack_segment_bytes = 0` in
+    `bpe.c`. The backtracking algorithm relied on `is_decomposition_reachable`
+    / `token_reachable` — context-free precomputed bitmaps that mis-decide
+    a small but pervasive set of tokens (e.g. DeepSeek `induces`,
+    Qwen3 `pacaeval`, gpt-oss `downsampling`, GLM-4.7 `creativity`) where
+    canonical BPE prefers a longer prefix that the static reachability
+    tables incorrectly classify as preempted. The min-heap path is canonical
+    BPE by construction (lowest-rank adjacent merge, repeat) and matches HF
+    exactly. The bench harness `parity_assert.py` now passes 119/119.
+  - The previously locked-in regression cases (`directions`, `contributions`,
+    `documents`) remain green via `test/iree_tokenizers/bpe_regression_test.exs`.
+    The trie-walk preemption + right-spine consumption checks in
+    `bpe_backtrack.c` are still present but unused on the encode hot path;
+    we keep them in case the backtracking path is reintroduced later.
+  - Otherwise: see the latest `bench/results/parity_report.md` for the verified state.
 - Additional verification on this branch:
   - the benchmark-matrix rows currently published in `bench/results/model_matrix.md`
     (`LiquidAI/LFM2.5-1.2B-Instruct`, `Qwen/Qwen3.5-9B`, `zai-org/GLM-5.1`,

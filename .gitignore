@@ -23,3 +23,6 @@
 !/bench/results/sentencepiece_compare_encode.svg
 !/bench/results/sentencepiece_compare_decode.svg
 .cachebro/*
+.claude/scheduled-tasks.lock
+.claude/scheduled_tasks.lock
+.claude/settings.local.json

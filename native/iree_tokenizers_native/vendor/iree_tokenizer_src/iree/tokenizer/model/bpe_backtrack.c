@@ -479,6 +479,64 @@ static bool iree_tokenizer_bpe_is_suffix_merge_preempted(
     }
   }
 
+  // Trie-walk preemption: enumerate every in-vocab token starting at
+  // remaining[prefix_end] (not just the longest), and check each one for
+  // preemption. The compound builder below extends left-to-right by
+  // single-character merges, which misses tokens whose canonical BPE merge
+  // path differs from byte-order extension.
+  //
+  // Example (DeepSeek-V3 "directions" with prefix=ct, remaining="ions",
+  //          suffix_merge_rank=1653 from ire+ct → irect):
+  //   - cursor walks `i` (1B), `io` (2B), `ion` (3B), `ions` (4B).
+  //   - `ion` (eff_rank 38 < 1653) merges with `ct` to form `ction` at
+  //     rank 318 < 1653, and ion is not consumed rightward at lower rank
+  //     (ion+s rank 426 > 318) → preempt.
+  //   - Note that `ions` (the trie's *longest* match, eff_rank 427) has no
+  //     merge with `ct`, so a longest-match-only check would miss this.
+  //   - The compound builder also misses it because `io n` is not a merge
+  //     (canonical BPE forms `ion` via i+on, not io+n).
+  //
+  // Safety invariants per candidate token:
+  //   - effective_rank[cand] < suffix_merge_rank  → cand's merge tree
+  //     completes before suffix_merge could fire.
+  //   - merge(prefix, cand).rank < suffix_merge_rank  → the resulting
+  //     boundary merge fires before suffix_merge.
+  //   - !is_token_consumed_rightward(cand, ..., merge_rank)  → cand
+  //     isn't itself stolen by an even lower-rank rightward merge.
+  {
+    const uint32_t* effective_rank = model->backtrack_tables.effective_rank;
+    const bool byte_level_input = iree_all_bits_set(
+        model->flags, IREE_TOKENIZER_BPE_FLAG_BYTE_LEVEL_INPUT);
+    iree_tokenizer_trie_cursor_t walk;
+    iree_tokenizer_trie_cursor_reset(&walk, model->trie);
+    iree_host_size_t walk_pos = prefix_end;
+    iree_host_size_t walk_len = 0;
+    while (walk_pos < remaining_size) {
+      if (!iree_tokenizer_bpe_trie_advance_byte(
+              &walk, remaining_data[walk_pos], byte_level_input)) {
+        break;
+      }
+      walk_pos++;
+      walk_len++;
+      int32_t cand_token = iree_tokenizer_trie_cursor_token_id(&walk);
+      if (cand_token < 0) continue;
+      // Direct preemption (next_length window) was handled above.
+      if (walk_len <= next_length) continue;
+      if (effective_rank[(uint32_t)cand_token] >= suffix_merge_rank) continue;
+      iree_tokenizer_merge_hash_result_t prefix_cand =
+          iree_tokenizer_vocab_merge_hash_lookup(model->merge_hash,
+                                                 prefix_token, cand_token);
+      if (!iree_tokenizer_merge_hash_result_is_valid(prefix_cand)) continue;
+      if (prefix_cand.rank >= suffix_merge_rank) continue;
+      if (iree_tokenizer_bpe_is_token_consumed_rightward(
+              model, cand_token, remaining_data, remaining_size,
+              prefix_end + walk_len, prefix_cand.rank)) {
+        continue;
+      }
+      return true;
+    }
+  }
+
   // Compound preemption: build progressively longer compounds from the
   // characters following the prefix, checking merge(prefix, compound) at each
   // step. This catches cases where the direct merge can't fire but the prefix
@@ -626,6 +684,7 @@ static bool iree_tokenizer_bpe_is_suffix_blocked(
               "suffix chain depth exceeds capacity");
   if (suffix_count == 0) return false;
 
+
   // Walk the trie to enumerate all prefix tokens of the remaining input.
   iree_tokenizer_trie_cursor_t cursor;
   iree_tokenizer_trie_cursor_reset(&cursor, model->trie);
@@ -666,22 +725,42 @@ static bool iree_tokenizer_bpe_is_suffix_blocked(
 
       // Verify the prefix token can actually form at this position. A
       // multi-character prefix requires its internal merges to complete
-      // before external boundary merges consume its edge characters. If
-      // the rightmost base of the prefix merges with the following
-      // character at a rank lower than the prefix's internal consumption
-      // of that base, the prefix cannot form here.
+      // before external boundary merges consume its edge characters.
+      //
+      // The previous version only inspected the *rightmost base byte* via
+      // right_boundary_consumed_rank — sufficient for cases where a base
+      // byte gets stolen, but missed cases where an intermediate merged
+      // node on the right spine is consumed externally before its parent
+      // merge fires. Example (DeepSeek-V3 prefix=ution = ut+ion rank 1073,
+      // following=s): the rightmost base `n` is consumed at rank 6 (o+n)
+      // and `n+s` is high-rank, so the old check passed — but in canonical
+      // BPE `ion+s → ions` rank 426 fires before `ut+ion → ution` rank
+      // 1073 can fire, consuming `ion` and preventing `ution` from forming.
+      //
+      // The fix walks the entire right spine: at each internal node N, we
+      // check whether N's right child is consumed by an external rightward
+      // merge before N's own merge can fire. If any node on the spine
+      // fails, the prefix cannot form here.
       if (effective_rank[(uint32_t)prefix_token] > 1 &&
           i + 1 < remaining_size) {
-        uint32_t rightmost_base = iree_tokenizer_bpe_rightmost_base_token(
-            model, (uint32_t)prefix_token);
-        uint32_t right_consumed =
-            iree_tokenizer_bpe_right_boundary_consumed_rank(
-                model, (uint32_t)prefix_token);
-        if (iree_tokenizer_bpe_is_token_consumed_rightward(
-                model, (int32_t)rightmost_base, remaining_data, remaining_size,
-                i + 1, right_consumed)) {
-          continue;  // Prefix can't form at this position.
+        bool prefix_blocked = false;
+        uint32_t cur = (uint32_t)prefix_token;
+        while (split_table[cur].left_id != cur) {
+          uint32_t right_node = split_table[cur].right_id;
+          // The merge that forms `cur` consumes `right_node` at rank =
+          // effective_rank[cur] (i.e., the merge index at which cur appears).
+          // An external merge with `right_node` at strictly lower rank
+          // preempts cur's formation.
+          uint32_t cur_form_rank = effective_rank[cur];
+          if (iree_tokenizer_bpe_is_token_consumed_rightward(
+                  model, (int32_t)right_node, remaining_data, remaining_size,
+                  i + 1, cur_form_rank)) {
+            prefix_blocked = true;
+            break;
+          }
+          cur = right_node;
         }
+        if (prefix_blocked) continue;
       }
 
       // Found a valid blocking merge. Report its rank so pair validation

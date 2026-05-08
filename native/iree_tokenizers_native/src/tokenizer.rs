@@ -336,7 +336,7 @@ pub fn tokenizer_decode_batch(
 
     let mut state_storage = vec![0u8; state_size];
     let flags = decode_flags(options.skip_special_tokens);
-    let mut capacities: Vec<usize> = batch_ids.iter().map(|ids| ids.len() * 4 + 64).collect();
+    let mut capacities: Vec<usize> = batch_ids.iter().map(|ids| ids.len() * 8 + 128).collect();
     let mut output_bufs: Vec<Vec<u8>> = capacities.iter().map(|&cap| vec![0; cap]).collect();
 
     loop {
@@ -366,7 +366,121 @@ pub fn tokenizer_decode_batch(
         if is_resource_exhausted(status) {
             unsafe { ffi::iree_status_ignore(status) };
             for (index, ids) in batch_ids.iter().enumerate() {
-                capacities[index] = capacities[index].max(ids.len() * 8 + 128) * 2;
+                capacities[index] = capacities[index].max(ids.len() * 16 + 256) * 2;
+                output_bufs[index] = vec![0; capacities[index]];
+            }
+            continue;
+        }
+
+        check_status(status)?;
+
+        let mut results = Vec::with_capacity(items.len());
+        for (index, item) in items.iter().enumerate() {
+            results.push(
+                String::from_utf8(output_bufs[index][..item.out_text_length].to_vec()).map_err(
+                    |err| {
+                        TokenizerError::new(
+                            ErrorKind::Internal,
+                            format!("invalid UTF-8 in decode batch output: {err}"),
+                        )
+                    },
+                )?,
+            );
+        }
+        return Ok(results);
+    }
+}
+
+// Variant of `tokenizer_decode_batch` that reads token ids from a list of
+// pre-packed `u32` little-endian binaries. Avoids cons-cell traversal of
+// `Vec<Vec<i32>>`, which is highly heap-layout sensitive (4–6× slowdowns
+// observed when callers' input lists are scattered across a fragmented BEAM
+// process heap, e.g. immediately after an `encode_batch` call).
+#[rustler::nif(schedule = "DirtyCpu")]
+pub fn tokenizer_decode_batch_u32<'a>(
+    tokenizer: Tokenizer,
+    batch_ids: Vec<rustler::Binary<'a>>,
+    opts: Vec<DecodeOption>,
+) -> Result<Vec<String>> {
+    let options = parse_decode_options(opts);
+
+    if batch_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    for (index, bin) in batch_ids.iter().enumerate() {
+        if bin.as_slice().len() % 4 != 0 {
+            return Err(TokenizerError::new(
+                ErrorKind::InvalidArgument,
+                format!(
+                    "decode_batch_u32 input {} length {} is not a multiple of 4",
+                    index,
+                    bin.as_slice().len()
+                ),
+            ));
+        }
+    }
+
+    let lens: Vec<usize> = batch_ids.iter().map(|b| b.as_slice().len() / 4).collect();
+
+    // Reinterpret each binary as &[i32]. BEAM binaries are word-aligned and
+    // every architecture we ship (x86_64, aarch64) is little-endian and
+    // tolerates 4-byte unaligned loads, so the cast is sound.
+    let id_slices: Vec<&[i32]> = batch_ids
+        .iter()
+        .map(|bin| {
+            let bytes = bin.as_slice();
+            unsafe { std::slice::from_raw_parts(bytes.as_ptr() as *const i32, bytes.len() / 4) }
+        })
+        .collect();
+
+    if tokenizer.resource.decode_strategy == DecodeStrategy::SentencePieceBpe {
+        return id_slices
+            .iter()
+            .map(|ids| {
+                decode_sentencepiece_bpe(&tokenizer.resource, ids, options.skip_special_tokens)
+            })
+            .collect();
+    }
+
+    let mut state_size = 0usize;
+    check_status(unsafe {
+        ffi::iree_tokenizer_decode_state_calculate_size(tokenizer.resource.ptr, &mut state_size)
+    })?;
+
+    let mut state_storage = vec![0u8; state_size];
+    let flags = decode_flags(options.skip_special_tokens);
+    let mut capacities: Vec<usize> = lens.iter().map(|&n| n * 8 + 128).collect();
+    let mut output_bufs: Vec<Vec<u8>> = capacities.iter().map(|&cap| vec![0; cap]).collect();
+
+    loop {
+        let mut items: Vec<ffi::iree_tokenizer_decode_batch_item_t> = id_slices
+            .iter()
+            .enumerate()
+            .map(|(index, ids)| ffi::iree_tokenizer_decode_batch_item_t {
+                tokens: ffi::iree_tokenizer_token_id_list_t {
+                    count: ids.len(),
+                    values: ids.as_ptr(),
+                },
+                text_output: ffi::make_mutable_string_view(&mut output_bufs[index]),
+                out_text_length: 0,
+            })
+            .collect();
+
+        let status = unsafe {
+            ffi::iree_tokenizer_decode_batch(
+                tokenizer.resource.ptr,
+                items.as_mut_ptr(),
+                items.len(),
+                flags,
+                ffi::make_byte_span(&mut state_storage),
+            )
+        };
+
+        if is_resource_exhausted(status) {
+            unsafe { ffi::iree_status_ignore(status) };
+            for (index, &len) in lens.iter().enumerate() {
+                capacities[index] = capacities[index].max(len * 16 + 256) * 2;
                 output_bufs[index] = vec![0; capacities[index]];
             }
             continue;
