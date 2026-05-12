@@ -23,6 +23,7 @@ Env vars:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -30,6 +31,10 @@ import shlex
 import subprocess
 import sys
 from pathlib import Path
+
+HASH_MARKER_PREFIX = "<!-- parity-content-hash: "
+HASH_MARKER_SUFFIX = " -->"
+HASH_MARKER_RE = re.compile(r"<!--\s*parity-content-hash:\s*([0-9a-f]+)\s*-->")
 
 
 def main() -> int:
@@ -67,21 +72,33 @@ def main() -> int:
         body = render_issue_body(
             model=model, repo_meta=repo_meta, known_bug=known_bug, run_url=run_url
         )
+        content_hash = compute_content_hash(body)
+        body_with_marker = f"{body}\n\n{HASH_MARKER_PREFIX}{content_hash}{HASH_MARKER_SUFFIX}\n"
 
         existing = find_existing_issue(repo, title, label)
 
         if existing:
             state = existing["state"].lower()
             print(f"  exists: #{existing['number']} for {model['label']} (state={state})")
-            comment_on_issue(repo, existing["number"], body)
-            summary_lines.append(
-                f"commented on {state} #{existing['number']} ({model['label']})"
-            )
+            latest_hash = latest_content_hash(repo, existing["number"])
+            if latest_hash == content_hash:
+                print(
+                    f"    skip comment on #{existing['number']}: content unchanged "
+                    f"(hash={content_hash[:12]})"
+                )
+                summary_lines.append(
+                    f"unchanged {state} #{existing['number']} ({model['label']})"
+                )
+            else:
+                comment_on_issue(repo, existing["number"], body_with_marker)
+                summary_lines.append(
+                    f"commented on {state} #{existing['number']} ({model['label']})"
+                )
         elif known_bug:
             print(f"  {model['label']}: known upstream bug, skipping issue creation")
             summary_lines.append(f"skipped {model['label']} (known upstream bug)")
         else:
-            number = create_issue(repo, title, body, [label])
+            number = create_issue(repo, title, body_with_marker, [label])
             print(f"  opened #{number} for {model['label']}")
             summary_lines.append(f"opened #{number} ({model['label']})")
 
@@ -165,6 +182,42 @@ def find_existing_issue(repo: str, title: str, label: str) -> dict | None:
         if item["title"] == title:
             return item
     return None
+
+
+def compute_content_hash(body: str) -> str:
+    # Strip lines that change every run (workflow URL) so identical failures
+    # produce the same hash across runs.
+    normalized_lines = [
+        line for line in body.splitlines() if not line.startswith("- Workflow run:")
+    ]
+    normalized = "\n".join(normalized_lines).strip()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def latest_content_hash(repo: str, number: int) -> str | None:
+    """Return the parity-content-hash marker on the newest comment, or the
+    issue body if no comments exist. Returns None if no marker is found."""
+    result = run_gh(
+        [
+            "gh",
+            "issue",
+            "view",
+            str(number),
+            "--repo",
+            repo,
+            "--json",
+            "body,comments",
+        ]
+    )
+    data = json.loads(result.stdout)
+    comments = data.get("comments") or []
+    if comments:
+        # `gh issue view` returns comments in ascending order.
+        candidate = comments[-1].get("body") or ""
+    else:
+        candidate = data.get("body") or ""
+    match = HASH_MARKER_RE.search(candidate)
+    return match.group(1) if match else None
 
 
 def comment_on_issue(repo: str, number: int, body: str) -> None:
