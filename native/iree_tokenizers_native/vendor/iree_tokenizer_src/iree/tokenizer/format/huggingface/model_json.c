@@ -580,11 +580,12 @@ iree_status_t iree_tokenizer_huggingface_parse_bpe_model(
     if (iree_status_is_ok(status)) {
       unk_token_id = iree_tokenizer_vocab_lookup(
           temp_vocab, iree_make_string_view(unk_buffer, unk_length));
-      if (unk_token_id == IREE_TOKENIZER_TOKEN_ID_INVALID) {
-        status = iree_make_status(IREE_STATUS_NOT_FOUND,
-                                  "unk_token '%.*s' not found in vocabulary",
-                                  (int)unk_length, unk_buffer);
-      }
+      // Soft failure matches HF semantics: a configured unk_token that
+      // isn't in vocab just means UNK is unreachable (common with byte-
+      // level BPE models like poolside/Laguna-XS.2 that ship "[UNK]" as a
+      // legacy field but never add it to vocab). Leave id INVALID; the
+      // builder-set call below already guards on this before registering
+      // the special token.
     }
   }
 
@@ -762,13 +763,19 @@ iree_status_t iree_tokenizer_huggingface_parse_wordpiece_model(
   // This avoids building a temporary vocab just for one lookup.
   iree_tokenizer_token_id_t unk_token_id = IREE_TOKENIZER_TOKEN_ID_INVALID;
   if (unk_token_length > 0) {
-    IREE_RETURN_AND_END_ZONE_IF_ERROR(
-        z0,
-        iree_tokenizer_resolve_token_in_vocab_json(
-            vocab_json,
-            iree_make_string_view(unk_token_buffer, unk_token_length),
-            &unk_token_id),
-        "resolving WordPiece unk_token");
+    iree_status_t resolve_status = iree_tokenizer_resolve_token_in_vocab_json(
+        vocab_json,
+        iree_make_string_view(unk_token_buffer, unk_token_length),
+        &unk_token_id);
+    if (iree_status_is_not_found(resolve_status)) {
+      // Soft failure matches HF semantics: a configured unk_token that
+      // isn't in vocab leaves UNK unreachable instead of failing the load.
+      iree_status_ignore(resolve_status);
+      unk_token_id = IREE_TOKENIZER_TOKEN_ID_INVALID;
+      resolve_status = iree_ok_status();
+    }
+    IREE_RETURN_AND_END_ZONE_IF_ERROR(z0, resolve_status,
+                                      "resolving WordPiece unk_token");
   }
 
   // Resources that need cleanup from this point forward.
