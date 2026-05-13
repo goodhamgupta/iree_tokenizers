@@ -74,6 +74,34 @@ defmodule IREETokenizers.CompatibilityTest do
     assert hf_text == "🚀"
   end
 
+  test "loads BPE tokenizer.json whose unk_token is absent from vocab (issue #9)" do
+    # Laguna-XS.2 declares `unk_token: "[UNK]"` but never adds `[UNK]` to
+    # vocab. HF's reference loader treats that as a soft failure (UNK just
+    # unreachable). The vendored C BPE path previously raised
+    # `NOT_FOUND; unk_token '[UNK]' not found in vocabulary`; the patch in
+    # `format/huggingface/model_json.c` now leaves the id INVALID and
+    # continues. This fixture pins that behaviour.
+    fixture = fixture_path("bpe_unk_token_not_in_vocab.json")
+
+    assert {:ok, tokenizer} = Tokenizer.from_file(fixture)
+    assert {:ok, encoding} = Tokenizer.encode(tokenizer, "hello world", add_special_tokens: false)
+    assert Encoding.get_ids(encoding) != []
+  end
+
+  test "loads tokenizer.json with negative-lookahead Split pre_tokenizer (issue #9)" do
+    # Reproduces the Laguna-XS.2 load failure: the vendored C regex parser
+    # rejected `(?:\r?\n)+(?!\r?\n)` with "unbalanced parentheses in
+    # lookahead" because the lookahead body is `\r?\n` (more than a single
+    # atom). The Rust-side sanitizer drops the redundant lookahead before
+    # handing the JSON to the C runtime.
+    fixture = fixture_path("lookahead_pre_tokenizer_minimal.json")
+
+    assert {:ok, tokenizer} = Tokenizer.from_file(fixture)
+    assert {:ok, encoding} = Tokenizer.encode(tokenizer, "hello world", add_special_tokens: false)
+    assert is_list(Encoding.get_ids(encoding))
+    assert Encoding.get_ids(encoding) != []
+  end
+
   test "encode stream preserves one-shot ids for null-pretokenizer bpe tokenizers" do
     fixture = fixture_path("sentencepiece_stream_split_minimal.json")
     {:ok, tokenizer} = Tokenizer.from_file(fixture)

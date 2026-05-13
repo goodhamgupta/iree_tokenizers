@@ -83,11 +83,14 @@ pub enum DecodeOption {
 
 #[rustler::nif(schedule = "DirtyCpu")]
 pub fn tokenizer_from_buffer(buffer: rustler::Binary) -> Result<Tokenizer> {
-    let metadata = tokenizer_metadata_from_hf_json(buffer.as_slice());
+    let buffer_slice = buffer.as_slice();
+    let sanitized = sanitize_huggingface_json(buffer_slice);
+    let json: &[u8] = sanitized.as_deref().unwrap_or(buffer_slice);
+    let metadata = tokenizer_metadata_from_hf_json(json);
     let mut raw = std::ptr::null_mut();
     let status = unsafe {
         ffi::iree_tokenizer_from_huggingface_json(
-            ffi::make_string_view(buffer.as_slice()),
+            ffi::make_string_view(json),
             ffi::system_allocator(),
             &mut raw,
         )
@@ -1252,4 +1255,304 @@ fn flush_pending_bytes(output: &mut String, pending_bytes: &mut Vec<u8>) {
 
     output.push_str(&String::from_utf8_lossy(pending_bytes));
     pending_bytes.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Pre-tokenizer regex sanitization.
+//
+// The vendored IREE regex parser only accepts `(?!X)` when `X` is a single
+// atom (literal, char class, shorthand, dot, Unicode property). HF tokenizers
+// in the wild use richer lookahead bodies — e.g. Laguna-XS.2 ships
+// `(?:\r?\n)+(?!\r?\n)`, where the lookahead body is `\r?\n` (atom + `?`
+// quantifier + atom). The C parser rejects that with
+// "unbalanced parentheses in lookahead" and the whole tokenizer fails to load.
+//
+// We can't patch the vendored C parser, so we pre-process the JSON here and
+// drop negative lookaheads whose presence is provably redundant given the
+// preceding greedy quantifier. Specifically, `(?:BODY)+(?!BODY)` and
+// `(?:BODY)*(?!BODY)` collapse to `(?:BODY)+` / `(?:BODY)*` because a greedy
+// quantifier already consumes maximally and a further match starting with
+// BODY is impossible at the next position. Lookaheads we can't prove
+// redundant are left in place so the C parser raises its original error.
+// ---------------------------------------------------------------------------
+
+fn sanitize_huggingface_json(json: &[u8]) -> Option<Vec<u8>> {
+    let mut root: Value = serde_json::from_slice(json).ok()?;
+    let mut modified = false;
+    if let Some(node) = root.get_mut("pre_tokenizer") {
+        modified |= sanitize_pre_tokenizer_node(node);
+    }
+    if modified {
+        serde_json::to_vec(&root).ok()
+    } else {
+        None
+    }
+}
+
+fn sanitize_pre_tokenizer_node(node: &mut Value) -> bool {
+    let Some(obj) = node.as_object_mut() else {
+        return false;
+    };
+    let kind = obj.get("type").and_then(Value::as_str).map(str::to_owned);
+    match kind.as_deref() {
+        Some("Sequence") => {
+            let Some(list) = obj.get_mut("pretokenizers").and_then(Value::as_array_mut) else {
+                return false;
+            };
+            let mut modified = false;
+            for child in list.iter_mut() {
+                modified |= sanitize_pre_tokenizer_node(child);
+            }
+            modified
+        }
+        Some("Split") => {
+            let Some(pattern) = obj.get_mut("pattern").and_then(Value::as_object_mut) else {
+                return false;
+            };
+            let Some(regex_value) = pattern.get_mut("Regex") else {
+                return false;
+            };
+            let Some(current) = regex_value.as_str() else {
+                return false;
+            };
+            match rewrite_unsupported_lookahead(current) {
+                Some(rewritten) if rewritten != current => {
+                    *regex_value = Value::String(rewritten);
+                    true
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+// Rewrites a regex pattern by dropping negative lookaheads whose bodies the
+// C parser would reject *and* whose presence is provably redundant.
+//
+// Returns `Some(new)` if anything changed, `None` otherwise.
+fn rewrite_unsupported_lookahead(pattern: &str) -> Option<String> {
+    let bytes = pattern.as_bytes();
+    let mut out = String::with_capacity(pattern.len());
+    let mut i = 0;
+    let mut modified = false;
+
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && i + 1 < bytes.len() {
+            // Always emit escape pairs as a unit so `\(` etc. never confuse
+            // the group scanner.
+            out.push_str(&pattern[i..i + 2]);
+            i += 2;
+            continue;
+        }
+
+        if bytes[i] == b'[' {
+            // Character class — copy verbatim, paren chars inside are literal.
+            let end = find_char_class_end(bytes, i);
+            let stop = end.unwrap_or(bytes.len() - 1);
+            out.push_str(&pattern[i..=stop]);
+            i = stop + 1;
+            continue;
+        }
+
+        if i + 2 < bytes.len() && bytes[i] == b'(' && bytes[i + 1] == b'?' && bytes[i + 2] == b'!' {
+            if let Some(close) = find_paren_close(bytes, i + 3) {
+                let body = &pattern[i + 3..close];
+                if !is_simple_lookahead_body(body) && prefix_makes_lookahead_redundant(&out, body) {
+                    i = close + 1;
+                    modified = true;
+                    continue;
+                }
+            }
+        }
+
+        // Default: emit a single byte. Pattern is UTF-8; multibyte chars
+        // start with a non-ASCII byte that isn't any of the regex meta chars
+        // we branch on, so copying byte-by-byte preserves UTF-8 sequences.
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+
+    if modified {
+        Some(out)
+    } else {
+        None
+    }
+}
+
+fn find_paren_close(bytes: &[u8], start: usize) -> Option<usize> {
+    let mut i = start;
+    let mut depth: i32 = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => i += 2,
+            b'[' => {
+                i = find_char_class_end(bytes, i)? + 1;
+            }
+            b'(' => {
+                depth += 1;
+                i += 1;
+            }
+            b')' => {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+                i += 1;
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+fn find_char_class_end(bytes: &[u8], open: usize) -> Option<usize> {
+    debug_assert_eq!(bytes[open], b'[');
+    let mut i = open + 1;
+    // POSIX: a literal `]` is permitted in the first position (also after `^`).
+    if i < bytes.len() && bytes[i] == b'^' {
+        i += 1;
+    }
+    if i < bytes.len() && bytes[i] == b']' {
+        i += 1;
+    }
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' if i + 1 < bytes.len() => i += 2,
+            b']' => return Some(i),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+// Returns true if `body` is a single regex atom the C parser accepts inside
+// `(?!...)` — i.e. there's no rewrite needed because the original regex
+// already compiles.
+fn is_simple_lookahead_body(body: &str) -> bool {
+    let b = body.as_bytes();
+    if b.is_empty() {
+        return false;
+    }
+    if b[0] == b'\\' {
+        if b.len() == 2 {
+            return true; // \r \n \s \S \d \D \w \W ...
+        }
+        if b.len() >= 4 && (b[1] == b'p' || b[1] == b'P') && b[2] == b'{' && b[b.len() - 1] == b'}'
+        {
+            let inner = &body[3..body.len() - 1];
+            return !inner.contains('{') && !inner.contains('}');
+        }
+        return false;
+    }
+    if b[0] == b'[' {
+        return find_char_class_end(b, 0) == Some(b.len() - 1);
+    }
+    if body == "." {
+        return true;
+    }
+    if body.chars().count() == 1 {
+        let c = body.chars().next().unwrap();
+        return !matches!(
+            c,
+            '(' | ')' | '|' | '*' | '+' | '?' | '[' | ']' | '{' | '}' | '\\' | '^' | '$' | '.'
+        );
+    }
+    false
+}
+
+// True if `prefix` ends with `(?:BODY)+`, `(?:BODY)*`, or `(?:BODY){n,…}` so
+// that a subsequent `(?!BODY)` is guaranteed to succeed and can be dropped.
+fn prefix_makes_lookahead_redundant(prefix: &str, body: &str) -> bool {
+    let plus = format!("(?:{})+", body);
+    let star = format!("(?:{})*", body);
+    prefix.ends_with(&plus) || prefix.ends_with(&star)
+}
+
+#[cfg(test)]
+mod sanitize_tests {
+    use super::*;
+
+    #[test]
+    fn drops_redundant_lookahead_after_greedy_group() {
+        // Laguna-XS.2 first Split pattern.
+        let input = r"(?:\r?\n)+(?!\r?\n)";
+        let out = rewrite_unsupported_lookahead(input).expect("expected rewrite");
+        assert_eq!(out, r"(?:\r?\n)+");
+    }
+
+    #[test]
+    fn drops_redundant_lookahead_after_star_group() {
+        let input = r"(?:ab|cd)*(?!ab|cd)";
+        let out = rewrite_unsupported_lookahead(input).expect("expected rewrite");
+        assert_eq!(out, r"(?:ab|cd)*");
+    }
+
+    #[test]
+    fn leaves_simple_atom_lookahead_alone() {
+        // (?!\S) is what the C parser already accepts.
+        let input = r"\s+(?!\S)|\s+";
+        assert!(rewrite_unsupported_lookahead(input).is_none());
+    }
+
+    #[test]
+    fn leaves_unsupported_lookahead_alone_when_not_redundant() {
+        // No preceding greedy quantifier matching the body — we can't prove
+        // redundancy and must surface the original error.
+        let input = r"foo(?!bar)";
+        assert!(rewrite_unsupported_lookahead(input).is_none());
+    }
+
+    #[test]
+    fn handles_full_laguna_second_pattern_unchanged() {
+        // The lookahead bodies here (`\S`) are simple atoms — no rewrite.
+        let input = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+        assert!(rewrite_unsupported_lookahead(input).is_none());
+    }
+
+    #[test]
+    fn ignores_paren_chars_inside_character_class() {
+        // `(?!` inside a char class is literal `(`, `?`, `!`.
+        let input = r"[(?!]+";
+        assert!(rewrite_unsupported_lookahead(input).is_none());
+    }
+
+    #[test]
+    fn ignores_escaped_parens() {
+        let input = r"\(\?\!foo\)";
+        assert!(rewrite_unsupported_lookahead(input).is_none());
+    }
+
+    #[test]
+    fn sanitize_huggingface_json_rewrites_split_inside_sequence() {
+        let json = br#"{
+            "pre_tokenizer": {
+                "type": "Sequence",
+                "pretokenizers": [
+                    {"type": "Split",
+                     "pattern": {"Regex": "(?:\\r?\\n)+(?!\\r?\\n)"},
+                     "behavior": "MergedWithNext",
+                     "invert": false},
+                    {"type": "ByteLevel"}
+                ]
+            }
+        }"#;
+        let rewritten = sanitize_huggingface_json(json).expect("expected sanitized JSON output");
+        let value: Value = serde_json::from_slice(&rewritten).unwrap();
+        let pattern = value
+            .get("pre_tokenizer")
+            .and_then(|v| v.get("pretokenizers"))
+            .and_then(|v| v.get(0))
+            .and_then(|v| v.get("pattern"))
+            .and_then(|v| v.get("Regex"))
+            .and_then(|v| v.as_str())
+            .expect("Regex field");
+        assert_eq!(pattern, r"(?:\r?\n)+");
+    }
+
+    #[test]
+    fn sanitize_huggingface_json_no_change_returns_none() {
+        let json = br#"{"pre_tokenizer": {"type": "ByteLevel"}}"#;
+        assert!(sanitize_huggingface_json(json).is_none());
+    }
 }
