@@ -26,3 +26,6 @@
 .claude/scheduled-tasks.lock
 .claude/scheduled_tasks.lock
 .claude/settings.local.json
+
+__pycache__/
+*.pyc
