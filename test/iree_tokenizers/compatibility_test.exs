@@ -134,7 +134,9 @@ defmodule IREETokenizers.CompatibilityTest do
     # boundary lands mid-character. Far longer than a single tile.
     text = String.duplicate("日本語のテスト。", 96)
 
-    assert {:ok, iree_encoding} = Tokenizer.encode(iree_tokenizer, text, add_special_tokens: false)
+    assert {:ok, iree_encoding} =
+             Tokenizer.encode(iree_tokenizer, text, add_special_tokens: false)
+
     assert Encoding.get_ids(iree_encoding) != []
 
     {:ok, hf_encoding} = HFTokenizer.encode(hf_tokenizer, text, add_special_tokens: false)
