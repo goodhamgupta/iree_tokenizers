@@ -49,6 +49,7 @@ jobs:
         working-directory: bench
 
       - name: Run parity matrix
+        id: parity
         env:
           MODELS_JSON: results/trending_models.json
         run: mix run validate_parity.exs
@@ -78,4 +79,5 @@ jobs:
           WORKFLOW_RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
+          PARITY_OUTCOME: ${{ steps.parity.outcome }}
         run: uv run .github/scripts/file_parity_issues.py

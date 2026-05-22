@@ -117,6 +117,30 @@ defmodule IREETokenizers.CompatibilityTest do
     assert suffix_ids == Encoding.get_ids(iree_encoding)
   end
 
+  test "Sequence normalizer encodes long UTF-8 input across tile boundaries" do
+    # Regression for the parity-monitor SIGABRT (run 26019404748). The vendored
+    # Sequence normalizer tiled its input at a fixed 64-byte boundary that
+    # ignored UTF-8 codepoints, so child[0] passed a split multi-byte
+    # character through to the NFC child, which asserts on incomplete UTF-8
+    # and aborted the BEAM. `fastino/gliguard-LLMGuardrails-300M` (Unigram,
+    # Sequence[Replace, NFC, Strip] normalizer) hit this on the long CJK
+    # parity cases. The patch in `normalizer/sequence.c` trims the tile to a
+    # codepoint boundary.
+    fixture = fixture_path("unigram_sequence_normalizer_utf8.json")
+    {:ok, iree_tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, hf_tokenizer} = HFTokenizer.from_file(fixture)
+
+    # Pure 3-byte codepoints never align with the 64-byte tile, so every tile
+    # boundary lands mid-character. Far longer than a single tile.
+    text = String.duplicate("日本語のテスト。", 96)
+
+    assert {:ok, iree_encoding} = Tokenizer.encode(iree_tokenizer, text, add_special_tokens: false)
+    assert Encoding.get_ids(iree_encoding) != []
+
+    {:ok, hf_encoding} = HFTokenizer.encode(hf_tokenizer, text, add_special_tokens: false)
+    assert Encoding.get_ids(iree_encoding) == HFEncoding.get_ids(hf_encoding)
+  end
+
   describe "encode capacity / silent-truncation regression" do
     # The minimal ByteLevel BPE fixture is the worst case for the IREE NIF's
     # output buffer heuristic: every input byte becomes its own token, so the

@@ -8,6 +8,8 @@
 
 #include <string.h>
 
+#include "iree/base/internal/unicode.h"
+
 //===----------------------------------------------------------------------===//
 // Sequence Normalizer Implementation
 //===----------------------------------------------------------------------===//
@@ -567,6 +569,15 @@ static iree_status_t iree_tokenizer_normalizer_sequence_state_process(
       // Limit tile to what we can handle in scratch.
       tile_size = IREE_TOKENIZER_NORMALIZER_SEQUENCE_MIN_BATCH;
     }
+    // Every tile must end on a UTF-8 codepoint boundary. child[0] copies
+    // unmatched bytes through verbatim, and downstream children (e.g. the NFC
+    // normalizer) assert that their input ends on a complete codepoint, so a
+    // split sequence here aborts the runtime. Trim any incomplete trailing
+    // bytes; they carry to the next tile (or to the caller, who re-feeds them
+    // after collecting the rest of the codepoint). When the tile already ends
+    // on a boundary the helper returns 0 and this is a no-op.
+    tile_size -= iree_unicode_utf8_incomplete_tail_length(
+        remaining_input.data, tile_size);
 
     // Process one tile through all children.
     iree_string_view_t tile_input =
