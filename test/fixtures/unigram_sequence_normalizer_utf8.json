@@ -1,0 +1,43 @@
+{
+  "version": "1.0",
+  "normalizer": {
+    "type": "Sequence",
+    "normalizers": [
+      {
+        "type": "Replace",
+        "pattern": { "Regex": "\\s{2,}|[\\n\\r\\t]" },
+        "content": " "
+      },
+      { "type": "NFC" },
+      { "type": "Strip", "strip_left": false, "strip_right": true }
+    ]
+  },
+  "pre_tokenizer": {
+    "type": "Metaspace",
+    "replacement": "▁",
+    "prepend_scheme": "always",
+    "split": true
+  },
+  "model": {
+    "type": "Unigram",
+    "unk_id": 0,
+    "vocab": [
+      ["<unk>", -10.0],
+      ["▁", -1.0],
+      ["日", -1.0],
+      ["本", -1.0],
+      ["語", -1.0],
+      ["の", -1.0],
+      ["テ", -1.0],
+      ["ス", -1.0],
+      ["ト", -1.0],
+      ["。", -1.0]
+    ]
+  },
+  "decoder": {
+    "type": "Metaspace",
+    "replacement": "▁",
+    "prepend_scheme": "always",
+    "split": true
+  }
+}

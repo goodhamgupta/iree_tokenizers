@@ -104,6 +104,10 @@ there:
   - repeated punctuation / suffix blocking behavior
 - `iree/tokenizer/normalizer/bert.c`
   - BERT whitespace/control-character classification
+- `iree/tokenizer/normalizer/sequence.c`
+  - per-tile `MIN_BATCH` cuts must be trimmed to a UTF-8 codepoint boundary
+    via `iree_unicode_utf8_incomplete_tail_length` before feeding children;
+    a split codepoint trips an assertion in the NFC/NFD normalizers
 - `iree/tokenizer/segmenter/bert.c`
   - must stay aligned with BERT normalizer classification
 - `iree/tokenizer/format/huggingface/segmenter_json.c`

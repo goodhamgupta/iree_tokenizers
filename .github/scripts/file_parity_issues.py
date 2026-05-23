@@ -36,6 +36,11 @@ HASH_MARKER_PREFIX = "<!-- parity-content-hash: "
 HASH_MARKER_SUFFIX = " -->"
 HASH_MARKER_RE = re.compile(r"<!--\s*parity-content-hash:\s*([0-9a-f]+)\s*-->")
 
+# Title of the single tracking issue filed when the parity matrix crashes
+# before producing a report. Kept stable so repeated crashes dedupe onto one
+# issue instead of opening a new one every scheduled run.
+RUN_FAILURE_TITLE = "parity-monitor: run crashed before producing a report"
+
 
 def main() -> int:
     report_path = Path(os.environ.get("REPORT_PATH", "bench/results/parity_report.json"))
@@ -51,7 +56,23 @@ def main() -> int:
         print("error: GH_REPO / GITHUB_REPOSITORY is required", file=sys.stderr)
         return 1
 
-    report = json.loads(report_path.read_text())
+    report = load_report(report_path)
+    if report is None:
+        # The parity matrix produced no readable report — `validate_parity.exs`
+        # crashed or was killed before writing one (e.g. a tokenizer model
+        # aborted the BEAM with a native assertion). File a single tracking
+        # issue so the failure stays visible, then exit 0: the monitor still
+        # did its job, and the parity matrix step's own red status already
+        # records that something went wrong.
+        print(
+            f"warning: no readable parity report at {report_path} — "
+            "treating as a crashed parity-monitor run",
+            file=sys.stderr,
+        )
+        ensure_label(repo, label)
+        file_run_failure_issue(repo, label, run_url, report_path)
+        return 0
+
     trending = (
         json.loads(trending_path.read_text()) if trending_path.exists() else []
     )
@@ -72,38 +93,127 @@ def main() -> int:
         body = render_issue_body(
             model=model, repo_meta=repo_meta, known_bug=known_bug, run_url=run_url
         )
-        content_hash = compute_content_hash(body)
-        body_with_marker = f"{body}\n\n{HASH_MARKER_PREFIX}{content_hash}{HASH_MARKER_SUFFIX}\n"
-
-        existing = find_existing_issue(repo, title, label)
-
-        if existing:
-            state = existing["state"].lower()
-            print(f"  exists: #{existing['number']} for {model['label']} (state={state})")
-            latest_hash = latest_content_hash(repo, existing["number"])
-            if latest_hash == content_hash:
-                print(
-                    f"    skip comment on #{existing['number']}: content unchanged "
-                    f"(hash={content_hash[:12]})"
-                )
-                summary_lines.append(
-                    f"unchanged {state} #{existing['number']} ({model['label']})"
-                )
-            else:
-                comment_on_issue(repo, existing["number"], body_with_marker)
-                summary_lines.append(
-                    f"commented on {state} #{existing['number']} ({model['label']})"
-                )
-        elif known_bug:
-            print(f"  {model['label']}: known upstream bug, skipping issue creation")
-            summary_lines.append(f"skipped {model['label']} (known upstream bug)")
-        else:
-            number = create_issue(repo, title, body_with_marker, [label])
-            print(f"  opened #{number} for {model['label']}")
-            summary_lines.append(f"opened #{number} ({model['label']})")
+        summary_lines.append(
+            publish_deduped_issue(
+                repo,
+                title,
+                body,
+                label,
+                tag=model["label"],
+                create_skip_reason="known upstream bug" if known_bug else None,
+            )
+        )
 
     write_step_summary(summary_lines)
     return 0
+
+
+def load_report(path: Path) -> dict | None:
+    """Loads the parity report JSON.
+
+    Returns None when the file is missing or unparseable, which means the
+    parity matrix crashed (or was killed) before writing a complete report.
+    """
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return None
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        print(f"warning: {path} exists but is not valid JSON: {e}", file=sys.stderr)
+        return None
+
+
+def file_run_failure_issue(
+    repo: str, label: str, run_url: str, report_path: Path
+) -> None:
+    """Files (or refreshes) the tracking issue for a crashed parity-monitor run."""
+    body = render_run_failure_body(run_url, report_path)
+    summary = publish_deduped_issue(
+        repo, RUN_FAILURE_TITLE, body, label, tag="run failure"
+    )
+    write_step_summary([summary])
+
+
+def render_run_failure_body(run_url: str, report_path: Path) -> str:
+    parity_outcome = os.environ.get("PARITY_OUTCOME", "").strip()
+    lines = [
+        "Automated alert filed by `parity-monitor`.",
+        "",
+        f"The parity matrix step produced no readable `{report_path}`, which "
+        "means `validate_parity.exs` crashed or was killed before it finished "
+        "— for example, a tokenizer model aborted the BEAM with a native "
+        "assertion. No per-model parity issues could be filed for this run.",
+        "",
+        f"- Workflow run: {run_url}",
+    ]
+    if parity_outcome:
+        lines.append(f"- Parity matrix step outcome: `{parity_outcome}`")
+    lines += [
+        "",
+        "### What to do",
+        "",
+        "1. Open the workflow run above and read the **Run parity matrix** "
+        "step log; its final lines identify the offending model and the "
+        "native failure.",
+        "2. Reproduce locally and fix the root cause.",
+        "3. Per-model parity issues resume automatically once a run produces "
+        "a report again.",
+        "",
+        "This issue is deduplicated: while the run keeps crashing the same "
+        "way no new comments are added.",
+    ]
+    return "\n".join(lines)
+
+
+def publish_deduped_issue(
+    repo: str,
+    title: str,
+    body: str,
+    label: str,
+    *,
+    tag: str,
+    create_skip_reason: str | None = None,
+) -> str:
+    """Files or refreshes a parity-monitor issue, deduplicating across runs.
+
+    - If an issue with this title and label already exists, comment only when
+      the content hash has changed; otherwise leave it untouched.
+    - If no issue exists and ``create_skip_reason`` is provided, skip creation
+      and return a ``skipped`` summary (used to honor the known-upstream-bug
+      list without suppressing follow-up comments on an already-open issue).
+    - Otherwise open a new issue.
+
+    Returns the step-summary line describing the action taken. ``tag`` labels
+    the summary so per-model and run-failure flows produce distinct entries.
+    """
+    content_hash = compute_content_hash(body)
+    body_with_marker = (
+        f"{body}\n\n{HASH_MARKER_PREFIX}{content_hash}{HASH_MARKER_SUFFIX}\n"
+    )
+
+    existing = find_existing_issue(repo, title, label)
+    if existing:
+        state = existing["state"].lower()
+        number = existing["number"]
+        print(f"  exists: #{number} for {tag} (state={state})")
+        if latest_content_hash(repo, number) == content_hash:
+            print(
+                f"    skip comment on #{number}: content unchanged "
+                f"(hash={content_hash[:12]})"
+            )
+            return f"unchanged {state} #{number} ({tag})"
+        comment_on_issue(repo, number, body_with_marker)
+        return f"commented on {state} #{number} ({tag})"
+
+    if create_skip_reason is not None:
+        print(f"  {tag}: {create_skip_reason}, skipping issue creation")
+        return f"skipped {tag} ({create_skip_reason})"
+
+    number = create_issue(repo, title, body_with_marker, [label])
+    print(f"  opened #{number} for {tag}")
+    return f"opened #{number} ({tag})"
 
 
 def is_failure(model: dict) -> bool:
