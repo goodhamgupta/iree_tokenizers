@@ -450,9 +450,20 @@ defmodule Parity do
     if byte_size(text) <= max_bytes do
       text
     else
-      <<head::binary-size(max_bytes), _::binary>> = text
+      head = utf8_aligned_prefix(text, max_bytes)
       head <> "…[truncated, full size #{byte_size(text)} bytes]"
     end
+  end
+
+  # Slicing a binary at a fixed byte count can split a multi-byte UTF-8
+  # codepoint, producing an invalid binary that crashes Jason.encode!/2 when
+  # the report is serialized. Back off at most three bytes until the prefix is
+  # valid UTF-8 (a single codepoint is <=4 bytes).
+  defp utf8_aligned_prefix(binary, max) do
+    Enum.find_value(0..3, binary_part(binary, 0, max), fn drop ->
+      candidate = binary_part(binary, 0, max - drop)
+      if String.valid?(candidate), do: candidate, else: nil
+    end)
   end
 
   defp first_diff(a, b) do
