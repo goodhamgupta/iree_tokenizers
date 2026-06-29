@@ -216,6 +216,15 @@ bool iree_tokenizer_bpe_emit_frozen_tokens(
     iree_host_size_t current_byte_position,
     iree_tokenizer_bpe_output_cursor_t* cursor) {
   iree_host_size_t max_token_length = model->max_token_length;
+  if (iree_all_bits_set(model->flags, IREE_TOKENIZER_BPE_FLAG_BYTE_LEVEL_INPUT)) {
+    // The window positions are raw input bytes, but ByteLevel vocab entries
+    // store non-ASCII bytes as two-byte UTF-8 sentinel codepoints. Keep enough
+    // raw lookahead to avoid freezing a token before later ASCII merges can
+    // fire after a run of multi-byte input.
+    max_token_length = max_token_length > IREE_HOST_SIZE_MAX / 2
+                           ? IREE_HOST_SIZE_MAX
+                           : max_token_length * 2;
+  }
 
   while (state->window.count > 0) {
     iree_tokenizer_bpe_window_token_t* front =
