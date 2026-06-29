@@ -346,8 +346,11 @@ defmodule IREE.Tokenizers.Tokenizer do
           end
         end)
         |> case do
-          {:ok, encodings} -> {:ok, Enum.reverse(encodings)}
-          {:error, _reason} = error -> error
+          {:ok, encodings} ->
+            {:ok, encodings |> Enum.reverse() |> apply_default_batch_padding(tokenizer)}
+
+          {:error, _reason} = error ->
+            error
         end
 
       {_left, _right} ->
@@ -561,10 +564,12 @@ defmodule IREE.Tokenizers.Tokenizer do
       {:ok, root} when is_map(root) ->
         transformations = default_encoding_transformations_from_hf_json(root)
         truncation = default_truncation_config_from_hf_json(root)
+        batch_padding = default_batch_padding_config_from_hf_json(root)
 
         %{}
         |> maybe_put_default_transformations(transformations)
         |> maybe_put_default_truncation(truncation)
+        |> maybe_put_default_batch_padding(batch_padding)
 
       _ ->
         %{}
@@ -583,6 +588,12 @@ defmodule IREE.Tokenizers.Tokenizer do
 
   defp maybe_put_default_truncation(components, truncation) do
     Map.put(components, :default_truncation, truncation)
+  end
+
+  defp maybe_put_default_batch_padding(components, nil), do: components
+
+  defp maybe_put_default_batch_padding(components, padding) do
+    Map.put(components, :default_batch_padding, padding)
   end
 
   defp effective_encoding_transformations(tokenizer, transformations) do
@@ -606,6 +617,40 @@ defmodule IREE.Tokenizers.Tokenizer do
       _ ->
         encoding
     end
+  end
+
+  defp apply_default_batch_padding([], _tokenizer), do: []
+
+  defp apply_default_batch_padding(encodings, tokenizer) do
+    case ComponentRegistry.get(tokenizer.resource)[:default_batch_padding] do
+      %{strategy: :batch_longest} = padding ->
+        target_length =
+          encodings
+          |> Enum.map(&Encoding.get_length/1)
+          |> Enum.max(fn -> 0 end)
+          |> maybe_round_up_to_multiple(padding[:pad_to_multiple_of])
+
+        Enum.map(encodings, &Encoding.pad(&1, target_length, batch_padding_opts(padding)))
+
+      _ ->
+        encodings
+    end
+  end
+
+  defp maybe_round_up_to_multiple(length, multiple)
+       when is_integer(multiple) and multiple > 0 do
+    div(length + multiple - 1, multiple) * multiple
+  end
+
+  defp maybe_round_up_to_multiple(length, _multiple), do: length
+
+  defp batch_padding_opts(padding) do
+    [
+      direction: padding.direction,
+      pad_id: padding.pad_id,
+      pad_type_id: padding.pad_type_id,
+      pad_token: padding.pad_token
+    ]
   end
 
   defp truncate_preserving_special_tokens(%Encoding{} = encoding, max_length, direction) do
@@ -755,6 +800,25 @@ defmodule IREE.Tokenizers.Tokenizer do
   defp padding_length(%{"strategy" => %{"Fixed" => length}}) when is_integer(length), do: length
   defp padding_length(%{"max_length" => length}) when is_integer(length), do: length
   defp padding_length(_padding), do: nil
+
+  defp default_batch_padding_config_from_hf_json(%{"padding" => padding}) when is_map(padding) do
+    case Map.get(padding, "strategy") do
+      "BatchLongest" ->
+        %{
+          strategy: :batch_longest,
+          direction: padding_direction(padding),
+          pad_id: Map.get(padding, "pad_id", 0),
+          pad_type_id: Map.get(padding, "pad_type_id", 0),
+          pad_token: Map.get(padding, "pad_token", "[PAD]"),
+          pad_to_multiple_of: Map.get(padding, "pad_to_multiple_of")
+        }
+
+      _ ->
+        nil
+    end
+  end
+
+  defp default_batch_padding_config_from_hf_json(_root), do: nil
 
   defp padding_direction(%{"direction" => direction}) when is_binary(direction) do
     case String.downcase(direction) do

@@ -231,6 +231,34 @@ defmodule IREETokenizers.CompatibilityTest do
     assert Tokenizer.get_vocab_size(iree_tokenizer) == HFTokenizer.get_vocab_size(hf_tokenizer)
   end
 
+  test "encode_batch matches HFTokenizer for tokenizer.json BatchLongest padding defaults" do
+    fixture = fixture_path("minimal_wordpiece_batch_longest_padded.json")
+    {:ok, iree_tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, hf_tokenizer} = HFTokenizer.from_file(fixture)
+    inputs = ["hello", "hello world token more text"]
+
+    {:ok, iree_encodings} =
+      Tokenizer.encode_batch(iree_tokenizer, inputs, add_special_tokens: false)
+
+    {:ok, hf_encodings} =
+      HFTokenizer.encode_batch(hf_tokenizer, inputs, add_special_tokens: false)
+
+    assert Enum.map(iree_encodings, &Encoding.get_ids/1) ==
+             Enum.map(hf_encodings, &HFEncoding.get_ids/1)
+
+    assert Enum.map(iree_encodings, &Encoding.get_type_ids/1) ==
+             Enum.map(hf_encodings, &HFEncoding.get_type_ids/1)
+
+    assert Enum.map(iree_encodings, &Encoding.get_attention_mask/1) ==
+             Enum.map(hf_encodings, &HFEncoding.get_attention_mask/1)
+
+    assert Enum.map(iree_encodings, &Encoding.get_special_tokens_mask/1) ==
+             Enum.map(hf_encodings, &HFEncoding.get_special_tokens_mask/1)
+
+    assert Enum.map(iree_encodings, &Encoding.get_tokens/1) ==
+             Enum.map(hf_encodings, &HFEncoding.get_tokens/1)
+  end
+
   defp fixture_path(name) do
     Path.join([__DIR__, "..", "fixtures", name])
   end
