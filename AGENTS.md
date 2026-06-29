@@ -28,6 +28,9 @@ regress token IDs, decoded text, batch behavior, or streaming behavior against
 4. Do not edit generated build output such as `_build/`, `bench/_build/`,
    `native/iree_tokenizers_native/target/`, or `priv/native/*.so` unless the
    task is explicitly about release artifacts.
+5. For PRs that change package behavior, update the `@version` in `mix.exs`
+   using SemVer: patch for bug fixes/parity fixes, minor for backward-compatible
+   features, and major for breaking API or behavior changes.
 
 ## Repository map
 

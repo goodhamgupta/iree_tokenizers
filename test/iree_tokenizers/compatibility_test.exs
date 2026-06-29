@@ -74,6 +74,19 @@ defmodule IREETokenizers.CompatibilityTest do
     assert hf_text == "🚀"
   end
 
+  test "word-cache BPE path preserves lower-rank overlapping merge order" do
+    fixture = fixture_path("bpe_word_cache_overlap.json")
+    {:ok, iree_tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, hf_tokenizer} = HFTokenizer.from_file(fixture)
+
+    {:ok, iree_encoding} = Tokenizer.encode(iree_tokenizer, " ,,,", add_special_tokens: false)
+    {:ok, hf_encoding} = HFTokenizer.encode(hf_tokenizer, " ,,,", add_special_tokens: false)
+
+    assert Encoding.get_ids(iree_encoding) == HFEncoding.get_ids(hf_encoding)
+    assert Encoding.get_tokens(iree_encoding) == HFEncoding.get_tokens(hf_encoding)
+    assert Encoding.get_tokens(iree_encoding) == ["▁,", ",,"]
+  end
+
   test "loads BPE tokenizer.json whose unk_token is absent from vocab (issue #9)" do
     # Laguna-XS.2 declares `unk_token: "[UNK]"` but never adds `[UNK]` to
     # vocab. HF's reference loader treats that as a soft failure (UNK just

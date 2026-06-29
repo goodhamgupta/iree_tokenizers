@@ -1,0 +1,52 @@
+{
+  "version": "1.0",
+  "normalizer": {
+    "type": "Replace",
+    "pattern": {
+      "String": " "
+    },
+    "content": "▁"
+  },
+  "pre_tokenizer": {
+    "type": "Split",
+    "pattern": {
+      "String": " "
+    },
+    "behavior": "MergedWithPrevious",
+    "invert": false
+  },
+  "decoder": {
+    "type": "Sequence",
+    "decoders": [
+      {
+        "type": "Replace",
+        "pattern": {
+          "String": "▁"
+        },
+        "content": " "
+      },
+      {
+        "type": "Fuse"
+      }
+    ]
+  },
+  "model": {
+    "type": "BPE",
+    "unk_token": "<unk>",
+    "byte_fallback": false,
+    "fuse_unk": true,
+    "vocab": {
+      "<unk>": 0,
+      "▁": 1,
+      ",": 2,
+      "▁,": 3,
+      ",,": 4,
+      "▁,,": 5
+    },
+    "merges": [
+      "▁ ,",
+      ", ,",
+      "▁, ,"
+    ]
+  }
+}
