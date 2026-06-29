@@ -67,6 +67,18 @@ defmodule IREETokenizers.BatchIntegrationTest do
     assert_batch_encoding_parity(iree_tokenizer, hf_tokenizer, inputs)
   end
 
+  test "byte-level bpe keeps merges after mixed CJK and ASCII runs" do
+    input = "日本語のトークナイザーはUnicodeをうまく扱えますか？ 中文分词 한국어 테스트. "
+
+    {:ok, iree_tokenizer} = IREETokenizer.from_pretrained("LiquidAI/LFM2.5-230M")
+    {:ok, hf_tokenizer} = HFTokenizer.from_pretrained("LiquidAI/LFM2.5-230M")
+
+    {:ok, iree_encoding} = IREETokenizer.encode(iree_tokenizer, input, add_special_tokens: false)
+    {:ok, hf_encoding} = HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: false)
+
+    assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
+  end
+
   defp assert_batch_encoding_parity(iree_tokenizer, hf_tokenizer, inputs) do
     {:ok, iree_encodings} =
       IREETokenizer.encode_batch(iree_tokenizer, inputs, add_special_tokens: false)
