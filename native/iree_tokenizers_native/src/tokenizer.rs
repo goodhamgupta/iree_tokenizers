@@ -1085,6 +1085,7 @@ fn infer_stream_encode_strategy(root: &Value) -> StreamEncodeStrategy {
         Some("BPE")
             if root.get("pre_tokenizer").is_none()
                 || root.get("pre_tokenizer") == Some(&Value::Null)
+                || has_right_aligned_digit_split_pre_tokenizer(root)
                 || is_sentencepiece_bpe_decoder(root)
                 || is_metaspace_byte_fallback_bpe_decoder(root) =>
         {
@@ -1092,6 +1093,36 @@ fn infer_stream_encode_strategy(root: &Value) -> StreamEncodeStrategy {
         }
         _ => StreamEncodeStrategy::Native,
     }
+}
+
+fn has_right_aligned_digit_split_pre_tokenizer(root: &Value) -> bool {
+    const PATTERN: &str = r"\d{1,3}(?=(?:\d{3})*\b)";
+
+    fn node_matches(node: &Value, pattern: &str) -> bool {
+        let Some(obj) = node.as_object() else {
+            return false;
+        };
+
+        match obj.get("type").and_then(Value::as_str) {
+            Some("Sequence") => obj
+                .get("pretokenizers")
+                .and_then(Value::as_array)
+                .is_some_and(|children| children.iter().any(|child| node_matches(child, pattern))),
+            Some("Split") => {
+                obj.get("pattern")
+                    .and_then(Value::as_object)
+                    .and_then(|pattern_obj| pattern_obj.get("Regex"))
+                    .and_then(Value::as_str)
+                    == Some(pattern)
+                    && obj.get("behavior").and_then(Value::as_str) == Some("Isolated")
+                    && obj.get("invert").and_then(Value::as_bool) == Some(false)
+            }
+            _ => false,
+        }
+    }
+
+    root.get("pre_tokenizer")
+        .is_some_and(|node| node_matches(node, PATTERN))
 }
 
 fn is_sentencepiece_bpe_decoder(root: &Value) -> bool {
@@ -1327,8 +1358,8 @@ fn sanitize_pre_tokenizer_node(node: &mut Value) -> bool {
     }
 }
 
-// Rewrites a regex pattern by dropping negative lookaheads whose bodies the
-// C parser would reject *and* whose presence is provably redundant.
+// Rewrites negative lookaheads whose bodies the C parser would reject *and*
+// whose presence is provably redundant.
 //
 // Returns `Some(new)` if anything changed, `None` otherwise.
 fn rewrite_unsupported_lookahead(pattern: &str) -> Option<String> {

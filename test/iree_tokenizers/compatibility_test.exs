@@ -115,6 +115,18 @@ defmodule IREETokenizers.CompatibilityTest do
     assert Encoding.get_ids(encoding) != []
   end
 
+  test "loads tokenizer.json with Cohere positive-lookahead digit Split pre_tokenizer (issue #20)" do
+    fixture = fixture_path("positive_lookahead_digit_split_minimal.json")
+
+    assert {:ok, tokenizer} = Tokenizer.from_file(fixture)
+
+    assert {:ok, encoding} =
+             Tokenizer.encode(tokenizer, "hello 1234567", add_special_tokens: false)
+
+    assert is_list(Encoding.get_ids(encoding))
+    assert Encoding.get_ids(encoding) != []
+  end
+
   test "encode stream preserves one-shot ids for null-pretokenizer bpe tokenizers" do
     fixture = fixture_path("sentencepiece_stream_split_minimal.json")
     {:ok, tokenizer} = Tokenizer.from_file(fixture)

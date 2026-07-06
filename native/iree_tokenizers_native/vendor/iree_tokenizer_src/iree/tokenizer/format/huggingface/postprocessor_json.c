@@ -429,6 +429,9 @@ static iree_status_t iree_tokenizer_parse_template_postprocessor(
       IREE_SVL("single"),
       IREE_SVL("pair"),
       IREE_SVL("special_tokens"),
+      IREE_SVL("trim_offsets"),
+      IREE_SVL("add_prefix_space"),
+      IREE_SVL("use_regex"),
   };
   IREE_RETURN_IF_ERROR(iree_json_validate_object_keys(
       json, kAllowedKeys, IREE_ARRAYSIZE(kAllowedKeys)));
@@ -458,9 +461,25 @@ static iree_status_t iree_tokenizer_parse_template_postprocessor(
                                              &pair_template),
       IREE_SV("in TemplateProcessing pair template")));
 
-  return iree_tokenizer_postprocessor_initialize(
-      &single_template, &pair_template, IREE_TOKENIZER_POSTPROCESSOR_FLAG_NONE,
-      out_postprocessor);
+  iree_tokenizer_postprocessor_flags_t flags =
+      IREE_TOKENIZER_POSTPROCESSOR_FLAG_NONE;
+  bool trim_offsets = false;
+  IREE_RETURN_IF_ERROR(iree_json_try_lookup_bool(
+      json, IREE_SV("trim_offsets"), /*default_value=*/false, &trim_offsets));
+  if (trim_offsets) flags |= IREE_TOKENIZER_POSTPROCESSOR_FLAG_TRIM_OFFSETS;
+
+  bool add_prefix_space = false;
+  IREE_RETURN_IF_ERROR(iree_json_try_lookup_bool(
+      json, IREE_SV("add_prefix_space"), /*default_value=*/false,
+      &add_prefix_space));
+  if (add_prefix_space) {
+    flags |= IREE_TOKENIZER_POSTPROCESSOR_FLAG_ADD_PREFIX_SPACE;
+  }
+  // use_regex is informational for TemplateProcessing, matching ByteLevel.
+
+  return iree_tokenizer_postprocessor_initialize(&single_template,
+                                                 &pair_template, flags,
+                                                 out_postprocessor);
 }
 
 //===----------------------------------------------------------------------===//
