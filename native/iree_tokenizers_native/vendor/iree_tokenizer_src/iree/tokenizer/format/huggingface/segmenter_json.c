@@ -14,6 +14,7 @@
 #include "iree/tokenizer/segmenter/punctuation.h"
 #include "iree/tokenizer/segmenter/sequence.h"
 #include "iree/tokenizer/segmenter/split.h"
+#include "iree/tokenizer/segmenter/thousands.h"
 #include "iree/tokenizer/segmenter/whitespace.h"
 
 //===----------------------------------------------------------------------===//
@@ -30,6 +31,9 @@
 static const char kGPT2RegexPattern[] =
     "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| "
     "?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)|\\s+";
+
+static const iree_string_view_t kThousandsSplitPattern =
+    IREE_SVL("\\d{1,3}(?=(?:\\d{3})*\\b)");
 
 // Parses a ByteLevel pre_tokenizer and creates a Split segmenter.
 // JSON structure:
@@ -214,6 +218,12 @@ static iree_status_t iree_tokenizer_parse_split_pre_tokenizer(
       regex_str, sizeof(regex_buffer), regex_buffer, &regex_length));
   iree_string_view_t pattern =
       iree_make_string_view(regex_buffer, regex_length);
+
+  if (!invert && behavior == IREE_TOKENIZER_UTIL_REGEX_SPLIT_ISOLATED &&
+      iree_string_view_equal(pattern, kThousandsSplitPattern)) {
+    return iree_tokenizer_segmenter_thousands_allocate(allocator,
+                                                       out_segmenter);
+  }
 
   // Compile the regex pattern to a DFA.
   iree_tokenizer_regex_dfa_t dfa;

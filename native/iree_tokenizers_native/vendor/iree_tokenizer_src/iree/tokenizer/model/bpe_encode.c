@@ -296,38 +296,8 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
             model, (const uint8_t*)segment.data + byte_position,
             segment.size - byte_position, &token_id, &trie_raw_length);
         if (token_id >= 0) {
-          const iree_tokenizer_bpe_split_entry_t* split_table =
-              model->backtrack_tables.split_table;
-          const uint32_t* effective_rank =
-              model->backtrack_tables.effective_rank;
-          const uint32_t* next_prefix_match =
-              model->backtrack_tables.next_prefix_match;
-          uint32_t candidate = (uint32_t)token_id;
-
-          // Only accept directly matchable base vocabulary tokens here.
-          // Merge-produced multi-byte tokens must be formed by the
-          // window/heap merge algorithm; seeding them directly into the window
-          // can over-tokenize inputs when an overlapping lower-rank merge to
-          // the right should win first (for example Gemma-style ▁,,, should
-          // form ▁, + ,, rather than ▁,, + ,). This must hold even when the
-          // word cache is enabled: the cache stores complete encoded segments,
-          // but byte-loop seeding still has to start from canonical bases.
-          while (true) {
-            if (effective_rank[candidate] == 1 &&
-                split_table[candidate].left_id == candidate) {
-              token_id = (int32_t)candidate;
-              token_byte_length =
-                  iree_tokenizer_vocab_token_text(model->vocab, token_id).size;
-              break;
-            }
-            candidate = next_prefix_match[candidate];
-            if (candidate == UINT32_MAX) {
-              token_id = -1;
-              break;
-            }
-          }
-        }
-        if (token_id < 0) {
+          token_byte_length = trie_raw_length;
+        } else {
           // No trie match. Fall back to byte-fallback (<0xNN>) or UNK.
           // For FUSE_UNK, check the last token in the window (not yet emitted)
           // before falling back to last_emitted_token_id.

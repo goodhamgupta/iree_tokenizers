@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-EXPECTED_IREE_COMMIT="af030e43d8343263a6c869eae32f958f229ff7af"
+EXPECTED_IREE_COMMIT="21a674843cd24adfdd5d5e7acb1e91ee644b45e4"
 
 if [[ $# -lt 1 ]]; then
   echo "usage: $0 /path/to/iree-checkout" >&2
@@ -37,7 +37,7 @@ find "${VENDOR_ROOT}" \
   \( -name '*.cc' -o -name '*.cpp' -o -name '*_test.cc' -o -name '*_benchmark.cc' -o -name '*_fuzz.cc' \) \
   -delete
 find "${VENDOR_ROOT}" \
-  \( -name 'BUILD.bazel' -o -name 'CMakeLists.txt' -o -name '*.dict' -o -name '*.py' \) \
+  \( -name 'BUILD.bazel' -o -name 'CMakeLists.txt' -o -name '*.dict' -o -name '*.py' -o -name '*.js' \) \
   -delete
 rm -rf \
   "${VENDOR_ROOT}/iree/base/testing" \
