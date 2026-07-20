@@ -171,12 +171,13 @@ typedef enum iree_tokenizer_regex_pseudo_byte_e {
 //===----------------------------------------------------------------------===//
 
 // Maximum number of exact codepoint ranges in a character class.
-// This limit keeps the match_class structure cache-friendly (2 cache lines)
-// while supporting the Unicode ranges found in HuggingFace tokenizers
-// (e.g., DeepSeek's [一-龥] or BLOOM's multi-script punctuation).
+// This bounded inline storage supports the larger Unicode punctuation and
+// script classes found in HuggingFace tokenizers (e.g., LongCat's
+// full-width/CJK punctuation Split regex, DeepSeek's [一-龥], and BLOOM's
+// multi-script punctuation).
 // Exceeding this limit produces a compile-time error with guidance to
 // use \p{L} for broad matching instead of many literal ranges.
-#define IREE_TOKENIZER_UTIL_REGEX_MAX_CHAR_CLASS_RANGES 10
+#define IREE_TOKENIZER_UTIL_REGEX_MAX_CHAR_CLASS_RANGES 32
 
 // An exact Unicode codepoint range [start, end] (inclusive).
 // Used for precise matching of literal Unicode ranges in character classes

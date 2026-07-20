@@ -1,0 +1,42 @@
+{
+  "version": "1.0",
+  "pre_tokenizer": {
+    "type": "ByteLevel",
+    "add_prefix_space": false,
+    "trim_offsets": true,
+    "use_regex": false
+  },
+  "decoder": {
+    "type": "ByteLevel",
+    "add_prefix_space": false,
+    "trim_offsets": true
+  },
+  "model": {
+    "type": "BPE",
+    "unk_token": "<unk>",
+    "byte_fallback": false,
+    "fuse_unk": true,
+    "vocab": {
+      "<unk>": 0,
+      "Ġ": 1,
+      "ð": 2,
+      "Ł": 3,
+      "ĳ": 4,
+      "©": 5,
+      "ðŁ": 6,
+      "ðŁĳ": 7,
+      "ðŁĳ©": 8,
+      "Ġð": 9,
+      "ĠðŁ": 10,
+      "ĠðŁĳ": 11
+    },
+    "merges": [
+      "ð Ł",
+      "ðŁ ĳ",
+      "ðŁĳ ©",
+      "Ġ ð",
+      "Ġð Ł",
+      "ĠðŁ ĳ"
+    ]
+  }
+}

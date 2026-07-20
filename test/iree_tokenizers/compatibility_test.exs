@@ -87,6 +87,19 @@ defmodule IREETokenizers.CompatibilityTest do
     assert Encoding.get_tokens(iree_encoding) == ["▁,", ",,"]
   end
 
+  test "byte-level BPE path preserves lower-rank emoji merge order" do
+    fixture = fixture_path("bpe_bytelevel_emoji_merge_rank.json")
+    {:ok, iree_tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, hf_tokenizer} = HFTokenizer.from_file(fixture)
+
+    {:ok, iree_encoding} = Tokenizer.encode(iree_tokenizer, " 👩", add_special_tokens: false)
+    {:ok, hf_encoding} = HFTokenizer.encode(hf_tokenizer, " 👩", add_special_tokens: false)
+
+    assert Encoding.get_ids(iree_encoding) == HFEncoding.get_ids(hf_encoding)
+    assert Encoding.get_tokens(iree_encoding) == HFEncoding.get_tokens(hf_encoding)
+    assert Encoding.get_tokens(iree_encoding) == ["Ġ", "ðŁĳ©"]
+  end
+
   test "loads BPE tokenizer.json whose unk_token is absent from vocab (issue #9)" do
     # Laguna-XS.2 declares `unk_token: "[UNK]"` but never adds `[UNK]` to
     # vocab. HF's reference loader treats that as a soft failure (UNK just
@@ -124,6 +137,16 @@ defmodule IREETokenizers.CompatibilityTest do
              Tokenizer.encode(tokenizer, "hello 1234567", add_special_tokens: false)
 
     assert is_list(Encoding.get_ids(encoding))
+    assert Encoding.get_ids(encoding) != []
+  end
+
+  test "loads tokenizer.json with LongCat-style Unicode punctuation Split pre_tokenizer" do
+    # Reproduces the LongCat-2.0 load failure: its punctuation Split regex has
+    # more exact Unicode ranges than the previous native regex char-class cap.
+    fixture = fixture_path("longcat_unicode_split_minimal.json")
+
+    assert {:ok, tokenizer} = Tokenizer.from_file(fixture)
+    assert {:ok, encoding} = Tokenizer.encode(tokenizer, "hello world", add_special_tokens: false)
     assert Encoding.get_ids(encoding) != []
   end
 
