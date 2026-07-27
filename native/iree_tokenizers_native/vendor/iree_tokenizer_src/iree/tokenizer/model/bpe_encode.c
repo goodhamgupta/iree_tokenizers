@@ -198,7 +198,10 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
       // Use backtracking for segments within threshold. This is the O(n)
       // path and handles 99.9%+ of real segments (word-level from
       // metaspace/whitespace/regex splitters are typically < 100 bytes).
-      if (segment.size <= model->max_backtrack_segment_bytes) {
+      const bool byte_level_input = iree_all_bits_set(
+          model->flags, IREE_TOKENIZER_BPE_FLAG_BYTE_LEVEL_INPUT);
+      if (!byte_level_input &&
+          segment.size <= model->max_backtrack_segment_bytes) {
         iree_tokenizer_bpe_backtrack_encode(
             model, state, (const uint8_t*)segment.data, segment.size,
             model->end_of_word_suffix, model->end_of_word_suffix_length);
