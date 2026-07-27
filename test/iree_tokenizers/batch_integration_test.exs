@@ -79,6 +79,30 @@ defmodule IREETokenizers.BatchIntegrationTest do
     assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
   end
 
+  test "byte-level ignore_merges bpe keeps repeated-punctuation segmentation" do
+    input = "!!! ??? ... ,,, ;;; :::"
+
+    {iree_tokenizer, hf_tokenizer} =
+      case System.get_env("NEMOTRON_TOKENIZER_JSON") do
+        nil ->
+          {:ok, iree_tokenizer} =
+            IREETokenizer.from_pretrained("nvidia/Nemotron-3-Embed-8B-BF16")
+
+          {:ok, hf_tokenizer} = HFTokenizer.from_pretrained("nvidia/Nemotron-3-Embed-8B-BF16")
+          {iree_tokenizer, hf_tokenizer}
+
+        path ->
+          {:ok, iree_tokenizer} = IREETokenizer.from_file(path)
+          {:ok, hf_tokenizer} = HFTokenizer.from_file(path)
+          {iree_tokenizer, hf_tokenizer}
+      end
+
+    {:ok, iree_encoding} = IREETokenizer.encode(iree_tokenizer, input, add_special_tokens: false)
+    {:ok, hf_encoding} = HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: false)
+
+    assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
+  end
+
   defp assert_batch_encoding_parity(iree_tokenizer, hf_tokenizer, inputs) do
     {:ok, iree_encodings} =
       IREETokenizer.encode_batch(iree_tokenizer, inputs, add_special_tokens: false)
