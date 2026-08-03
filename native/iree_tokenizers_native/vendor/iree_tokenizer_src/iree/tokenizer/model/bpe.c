@@ -189,7 +189,11 @@ iree_status_t iree_tokenizer_bpe_model_allocate(
     }
     if (min_backtrack < 2048) min_backtrack = 2048;
     if (min_backtrack > 4095) min_backtrack = 4095;
-    model->max_backtrack_segment_bytes = min_backtrack;
+    bool byte_level_input =
+        iree_all_bits_set(model->flags,
+                          IREE_TOKENIZER_BPE_FLAG_BYTE_LEVEL_INPUT);
+    model->max_backtrack_segment_bytes =
+        byte_level_input ? 0 : min_backtrack;
     // Stack holds at most one token per byte (worst case: all single-byte
     // tokens).
     model->backtrack_stack_capacity = model->max_backtrack_segment_bytes;
