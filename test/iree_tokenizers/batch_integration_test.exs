@@ -103,6 +103,32 @@ defmodule IREETokenizers.BatchIntegrationTest do
     assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
   end
 
+  test "byte-level bpe preserves merge rank for repeated punctuation" do
+    input = "!!! ??? ... ,,, ;;; :::"
+    tokenizer_json = System.get_env("GLM_TOKENIZER_JSON")
+
+    {iree_tokenizer, hf_tokenizer} =
+      if tokenizer_json do
+        {:ok, iree_tokenizer} = IREETokenizer.from_file(tokenizer_json)
+        {:ok, hf_tokenizer} = HFTokenizer.from_file(tokenizer_json)
+        {iree_tokenizer, hf_tokenizer}
+      else
+        {:ok, iree_tokenizer} = IREETokenizer.from_pretrained("zai-org/GLM-5.2")
+        {:ok, hf_tokenizer} = HFTokenizer.from_pretrained("zai-org/GLM-5.2")
+        {iree_tokenizer, hf_tokenizer}
+      end
+
+    for add_special_tokens <- [true, false] do
+      {:ok, iree_encoding} =
+        IREETokenizer.encode(iree_tokenizer, input, add_special_tokens: add_special_tokens)
+
+      {:ok, hf_encoding} =
+        HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: add_special_tokens)
+
+      assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
+    end
+  end
+
   defp assert_batch_encoding_parity(iree_tokenizer, hf_tokenizer, inputs) do
     {:ok, iree_encodings} =
       IREETokenizer.encode_batch(iree_tokenizer, inputs, add_special_tokens: false)
