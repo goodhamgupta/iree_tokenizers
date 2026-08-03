@@ -129,6 +129,44 @@ defmodule IREETokenizers.BatchIntegrationTest do
     end
   end
 
+  test "byte-level bpe preserves merge rank for Nemotron repeated punctuation" do
+    input = "!!! ??? ... ,,, ;;; :::"
+    tokenizer_json = System.get_env("NEMOTRON_1B_TOKENIZER_JSON")
+
+    {iree_tokenizer, hf_tokenizer} =
+      if tokenizer_json do
+        {:ok, iree_tokenizer} = IREETokenizer.from_file(tokenizer_json)
+        {:ok, hf_tokenizer} = HFTokenizer.from_file(tokenizer_json)
+        {iree_tokenizer, hf_tokenizer}
+      else
+        {:ok, iree_tokenizer} =
+          IREETokenizer.from_pretrained("nvidia/Nemotron-3-Embed-1B-BF16")
+
+        {:ok, hf_tokenizer} = HFTokenizer.from_pretrained("nvidia/Nemotron-3-Embed-1B-BF16")
+        {iree_tokenizer, hf_tokenizer}
+      end
+
+    for add_special_tokens <- [true, false] do
+      {:ok, iree_encoding} =
+        IREETokenizer.encode(iree_tokenizer, input, add_special_tokens: add_special_tokens)
+
+      {:ok, hf_encoding} =
+        HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: add_special_tokens)
+
+      assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
+
+      {:ok, [iree_batch_encoding]} =
+        IREETokenizer.encode_batch(iree_tokenizer, [input],
+          add_special_tokens: add_special_tokens
+        )
+
+      {:ok, [hf_batch_encoding]} =
+        HFTokenizer.encode_batch(hf_tokenizer, [input], add_special_tokens: add_special_tokens)
+
+      assert iree_batch_encoding.ids == HFEncoding.get_ids(hf_batch_encoding)
+    end
+  end
+
   defp assert_batch_encoding_parity(iree_tokenizer, hf_tokenizer, inputs) do
     {:ok, iree_encodings} =
       IREETokenizer.encode_batch(iree_tokenizer, inputs, add_special_tokens: false)
