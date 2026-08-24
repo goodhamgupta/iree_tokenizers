@@ -167,6 +167,38 @@ defmodule IREETokenizers.BatchIntegrationTest do
     end
   end
 
+  test "split plus ByteLevel use_regex false keeps literal whitespace tokens" do
+    inputs = [
+      "   leading\t\ttabs\n\nnewlines   trailing   ",
+      "def f(x):\n    return [i**2 for i in range(x) if i % 2 == 0]\n",
+      "bell\x07tab\ttab vertical\vform\ftab back\bspace",
+      "# Title\n\n- item **bold**\n- `code`\n\n> quote\n\n```py\nprint(1)\n```"
+    ]
+
+    tokenizer_json = System.get_env("MOTIF_TOKENIZER_JSON")
+
+    {iree_tokenizer, hf_tokenizer} =
+      if tokenizer_json do
+        {:ok, iree_tokenizer} = IREETokenizer.from_file(tokenizer_json)
+        {:ok, hf_tokenizer} = HFTokenizer.from_file(tokenizer_json)
+        {iree_tokenizer, hf_tokenizer}
+      else
+        {:ok, iree_tokenizer} = IREETokenizer.from_pretrained("Motif-Technologies/Motif-3")
+        {:ok, hf_tokenizer} = HFTokenizer.from_pretrained("Motif-Technologies/Motif-3")
+        {iree_tokenizer, hf_tokenizer}
+      end
+
+    for add_special_tokens <- [true, false] do
+      {:ok, iree_encodings} =
+        IREETokenizer.encode_batch(iree_tokenizer, inputs, add_special_tokens: add_special_tokens)
+
+      {:ok, hf_encodings} =
+        HFTokenizer.encode_batch(hf_tokenizer, inputs, add_special_tokens: add_special_tokens)
+
+      assert Enum.map(iree_encodings, & &1.ids) == Enum.map(hf_encodings, &HFEncoding.get_ids/1)
+    end
+  end
+
   defp assert_batch_encoding_parity(iree_tokenizer, hf_tokenizer, inputs) do
     {:ok, iree_encodings} =
       IREETokenizer.encode_batch(iree_tokenizer, inputs, add_special_tokens: false)
