@@ -20,6 +20,85 @@
 // BPE Segment Encoding
 //===----------------------------------------------------------------------===//
 
+static bool iree_tokenizer_bpe_segment_is_ascii_whitespace(
+    iree_string_view_t segment) {
+  for (iree_host_size_t i = 0; i < segment.size; ++i) {
+    switch ((uint8_t)segment.data[i]) {
+      case ' ':
+      case '\t':
+      case '\n':
+      case '\r':
+        break;
+      default:
+        return false;
+    }
+  }
+  return true;
+}
+
+static void iree_tokenizer_bpe_raw_trie_longest_match(
+    const iree_tokenizer_bpe_model_t* model, iree_string_view_t segment,
+    int32_t* out_token_id, iree_host_size_t* out_length) {
+  *out_token_id = -1;
+  *out_length = 0;
+
+  iree_tokenizer_trie_cursor_t cursor;
+  iree_tokenizer_trie_cursor_reset(&cursor, model->trie);
+  for (iree_host_size_t i = 0; i < segment.size; ++i) {
+    if (!iree_tokenizer_trie_cursor_advance(&cursor,
+                                            (uint8_t)segment.data[i])) {
+      break;
+    }
+    int32_t token_id = iree_tokenizer_trie_cursor_token_id(&cursor);
+    if (token_id >= 0) {
+      *out_token_id = token_id;
+      *out_length = i + 1;
+    }
+  }
+}
+
+static int32_t iree_tokenizer_bpe_raw_single_byte_token(
+    const iree_tokenizer_bpe_model_t* model, uint8_t byte) {
+  iree_string_view_t segment = iree_make_string_view((const char*)&byte, 1);
+  int32_t token_id = -1;
+  iree_host_size_t match_length = 0;
+  iree_tokenizer_bpe_raw_trie_longest_match(model, segment, &token_id,
+                                            &match_length);
+  return match_length == 1 ? token_id : -1;
+}
+
+static void iree_tokenizer_bpe_raw_control_run_longest_match(
+    const iree_tokenizer_bpe_model_t* model, iree_string_view_t segment,
+    int32_t* out_token_id, iree_host_size_t* out_length) {
+  *out_token_id = -1;
+  *out_length = 0;
+  if (segment.size == 0) return;
+
+  uint8_t first = (uint8_t)segment.data[0];
+  if (first != '\t' && first != '\n' && first != '\r') return;
+
+  iree_host_size_t run_length = 1;
+  while (run_length < segment.size &&
+         (uint8_t)segment.data[run_length] == first) {
+    ++run_length;
+  }
+  iree_tokenizer_bpe_raw_trie_longest_match(
+      model, iree_make_string_view(segment.data, run_length), out_token_id,
+      out_length);
+}
+
+static bool iree_tokenizer_bpe_segment_contains_raw_control_whitespace(
+    const iree_tokenizer_bpe_model_t* model, iree_string_view_t segment) {
+  for (iree_host_size_t i = 0; i < segment.size; ++i) {
+    uint8_t byte = (uint8_t)segment.data[i];
+    if ((byte == '\t' || byte == '\n' || byte == '\r') &&
+        iree_tokenizer_bpe_raw_single_byte_token(model, byte) >= 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Encodes a single segment using a resumable state machine.
 //
 // State machine phases (see iree_tokenizer_bpe_phase_t):
@@ -160,6 +239,9 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
         int32_t whole_segment_token_id = -1;
         iree_host_size_t match_length = 0;
         iree_host_size_t expected_length = segment.size;
+        bool raw_whitespace_token = false;
+        const bool byte_level_input = iree_all_bits_set(
+            model->flags, IREE_TOKENIZER_BPE_FLAG_BYTE_LEVEL_INPUT);
 
         // For IGNORE_MERGES, always use bare segment lookup since HuggingFace
         // does longest-match without suffix. For normal mode with suffix,
@@ -170,6 +252,24 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
           iree_tokenizer_bpe_trie_longest_match_with_suffix(
               model, segment, suffix, &whole_segment_token_id, &match_length);
           expected_length = segment.size + suffix.size;
+        } else if (byte_level_input &&
+                   iree_tokenizer_bpe_segment_is_ascii_whitespace(segment)) {
+          // Some Hugging Face tokenizer JSONs compose an explicit Split with
+          // ByteLevel(use_regex=false) and carry literal whitespace tokens in
+          // the vocabulary. Preserve those exact whitespace runs when present
+          // instead of remapping them to GPT-2 sentinels.
+          iree_tokenizer_bpe_raw_trie_longest_match(
+              model, segment, &whole_segment_token_id, &match_length);
+          raw_whitespace_token = whole_segment_token_id >= 0 &&
+                                 match_length == expected_length;
+        } else if (byte_level_input &&
+                   iree_tokenizer_bpe_segment_contains_raw_control_whitespace(
+                       model, segment)) {
+          // Keep mixed punctuation/text + raw newline/tab segments out of the
+          // ByteLevel whole-segment fast path so the byte loop can emit the
+          // literal control-whitespace token and preserve HF merge boundaries.
+          whole_segment_token_id = -1;
+          match_length = 0;
         } else {
           // Use ByteLevel-aware lookup to handle byte-to-character mapping.
           iree_tokenizer_bpe_trie_longest_match_byte_level(
@@ -177,7 +277,8 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
         }
 
         if (whole_segment_token_id >= 0 && match_length == expected_length &&
-            (ignore_merges || iree_tokenizer_bpe_is_first_token_reachable(
+            (raw_whitespace_token || ignore_merges ||
+             iree_tokenizer_bpe_is_first_token_reachable(
                                   model, (uint32_t)whole_segment_token_id))) {
           // Emit with original_segment_size for correct offset.
           if (!iree_tokenizer_bpe_emit_and_track(
@@ -287,6 +388,21 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
       // encoding of the ByteLevel codepoint (e.g., space -> "Ġ").
       int32_t token_id = model->byte_to_token[input_byte];
       iree_host_size_t token_byte_length = 1;
+      if (iree_all_bits_set(model->flags,
+                            IREE_TOKENIZER_BPE_FLAG_BYTE_LEVEL_INPUT) &&
+          (input_byte == '\t' || input_byte == '\n' || input_byte == '\r')) {
+        int32_t raw_token_id = -1;
+        iree_host_size_t raw_token_length = 0;
+        iree_tokenizer_bpe_raw_control_run_longest_match(
+            model,
+            iree_make_string_view(segment.data + byte_position,
+                                  segment.size - byte_position),
+            &raw_token_id, &raw_token_length);
+        if (raw_token_id >= 0 && raw_token_length > 0) {
+          token_id = raw_token_id;
+          token_byte_length = raw_token_length;
+        }
+      }
       if (token_id < 0) {
         // No direct single-byte token. Try a multi-byte trie match first:
         // some base vocabulary tokens (e.g., SentencePiece's ▁ = U+2581,

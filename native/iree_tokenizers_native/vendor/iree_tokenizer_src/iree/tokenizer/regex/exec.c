@@ -667,27 +667,10 @@ void iree_tokenizer_regex_exec_initialize(
 // Lookahead Helpers (for emit_match)
 //===----------------------------------------------------------------------===//
 
-// Helper to check if state has the "early no-lookahead" PCRE-compatibility
-// flag. When true and both lookahead-passed and fallback positions exist,
-// prefer longer. When false, prefer lookahead-passed position.
-static inline bool iree_tokenizer_regex_has_early_no_lookahead(
-    const iree_tokenizer_regex_dfa_t* dfa, uint16_t state) {
-  if (!dfa->lookahead) return false;
-  return iree_any_bit_set(
-      dfa->lookahead[state].flags,
-      IREE_TOKENIZER_UTIL_REGEX_LOOKAHEAD_FLAG_HAS_EARLY_NO_LOOKAHEAD);
-}
-
 // Internal helper to emit a match if we have a valid accepting position.
 //
-// When deciding between lookahead-passed and fallback positions:
-// - If has_early_no_lookahead is true, prefer LONGER match (independent branch
-//   extends greedily). Example: \s*[\r\n]+|\s+(?!\S)|\s+ with input "\n\n"
-// - If has_early_no_lookahead is false, prefer LOOKAHEAD-PASSED position
-//   (fallback branch is companion to lookahead). Example: \s+(?!\S)|\s+ with "
-//   x"
-//
-// See nfa.h accept struct comment for full documentation on limitations.
+// When both lookahead-passed and fallback positions exist, Hugging Face
+// tokenizers' Split regex behavior prefers the longest accepted fallback span.
 // Emits a match if we have a valid accepting position, returning the match end
 // position via out_match_end for callers that need to resume from that point.
 //
@@ -706,20 +689,15 @@ static inline iree_status_t iree_tokenizer_regex_emit_match(
   bool has_match = false;
 
   if (state->has_accept && state->has_accept_fallback) {
-    // Both lookahead-passed and fallback positions exist.
-    // Decision depends on whether an early non-lookahead branch exists.
-    bool prefer_longer =
-        iree_tokenizer_regex_has_early_no_lookahead(dfa, state->dfa_state) &&
-        state->last_accept_fallback > state->last_accept;
+    bool prefer_longer = state->last_accept_fallback > state->last_accept;
 
     if (prefer_longer) {
-      // Early non-lookahead branch extends further - use it.
-      // Example: \s*[\r\n]+ in "\s*[\r\n]+|\s+(?!\S)|\s+" with input "\n\n".
+      // Hugging Face tokenizers uses the longest accepted fallback span for
+      // Split regexes such as \s+(?!\S)|\s+, so leading whitespace before a
+      // non-space token remains one segment instead of being shortened to
+      // satisfy the lookahead branch.
       match_end = state->last_accept_fallback;
     } else {
-      // All non-lookahead branches are companions (come after lookahead).
-      // Prefer lookahead-passed position (PCRE backtracking semantics).
-      // Example: \s+ in "\s+(?!\S)|\s+" with input "   x" prefers "  " not " ".
       match_end = state->last_accept;
     }
     has_match = true;

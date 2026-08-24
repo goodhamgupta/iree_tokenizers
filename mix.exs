@@ -2,7 +2,7 @@ defmodule IREETokenizers.MixProject do
   use Mix.Project
 
   @source_url "https://github.com/goodhamgupta/iree_tokenizers"
-  @version "0.8.8"
+  @version "0.8.9"
 
   def project do
     [
