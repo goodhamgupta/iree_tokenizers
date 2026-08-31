@@ -1346,7 +1346,7 @@ fn sanitize_pre_tokenizer_node(node: &mut Value) -> bool {
             let Some(current) = regex_value.as_str() else {
                 return false;
             };
-            match rewrite_unsupported_lookahead(current) {
+            match rewrite_split_regex(current) {
                 Some(rewritten) if rewritten != current => {
                     *regex_value = Value::String(rewritten);
                     true
@@ -1355,6 +1355,21 @@ fn sanitize_pre_tokenizer_node(node: &mut Value) -> bool {
             }
         }
         _ => false,
+    }
+}
+
+fn rewrite_split_regex(pattern: &str) -> Option<String> {
+    rewrite_gpt_whitespace_fallback(pattern).or_else(|| rewrite_unsupported_lookahead(pattern))
+}
+
+fn rewrite_gpt_whitespace_fallback(pattern: &str) -> Option<String> {
+    const GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+    const GPT_SPLIT_WITHOUT_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)";
+
+    if pattern == GPT_SPLIT_WITH_WHITESPACE_FALLBACK {
+        Some(GPT_SPLIT_WITHOUT_WHITESPACE_FALLBACK.to_owned())
+    } else {
+        None
     }
 }
 
@@ -1524,6 +1539,16 @@ mod sanitize_tests {
         // (?!\S) is what the C parser already accepts.
         let input = r"\s+(?!\S)|\s+";
         assert!(rewrite_unsupported_lookahead(input).is_none());
+    }
+
+    #[test]
+    fn drops_gpt_whitespace_fallback_for_bytelevel_split_parity() {
+        let input = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+        let out = rewrite_split_regex(input).expect("expected rewrite");
+        assert_eq!(
+            out,
+            r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)"
+        );
     }
 
     #[test]

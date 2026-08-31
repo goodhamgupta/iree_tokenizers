@@ -199,6 +199,46 @@ defmodule IREETokenizers.BatchIntegrationTest do
     end
   end
 
+  test "gpt split plus ByteLevel keeps whitespace branch priority" do
+    inputs = [
+      "   leading\t\ttabs\n\nnewlines   trailing   ",
+      "def f(x):\n    return [i**2 for i in range(x) if i % 2 == 0]\n"
+    ]
+
+    tokenizer_json = System.get_env("QWEN38_TOKENIZER_JSON")
+
+    {iree_tokenizer, hf_tokenizer} =
+      if tokenizer_json do
+        {:ok, iree_tokenizer} = IREETokenizer.from_file(tokenizer_json)
+        {:ok, hf_tokenizer} = HFTokenizer.from_file(tokenizer_json)
+        {iree_tokenizer, hf_tokenizer}
+      else
+        {:ok, iree_tokenizer} = IREETokenizer.from_pretrained("empero-ai/Qwen3.8-9B-Distill")
+        {:ok, hf_tokenizer} = HFTokenizer.from_pretrained("empero-ai/Qwen3.8-9B-Distill")
+        {iree_tokenizer, hf_tokenizer}
+      end
+
+    for add_special_tokens <- [true, false] do
+      for input <- inputs do
+        {:ok, iree_encoding} =
+          IREETokenizer.encode(iree_tokenizer, input, add_special_tokens: add_special_tokens)
+
+        {:ok, hf_encoding} =
+          HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: add_special_tokens)
+
+        assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
+      end
+
+      {:ok, iree_encodings} =
+        IREETokenizer.encode_batch(iree_tokenizer, inputs, add_special_tokens: add_special_tokens)
+
+      {:ok, hf_encodings} =
+        HFTokenizer.encode_batch(hf_tokenizer, inputs, add_special_tokens: add_special_tokens)
+
+      assert Enum.map(iree_encodings, & &1.ids) == Enum.map(hf_encodings, &HFEncoding.get_ids/1)
+    end
+  end
+
   defp assert_batch_encoding_parity(iree_tokenizer, hf_tokenizer, inputs) do
     {:ok, iree_encodings} =
       IREETokenizer.encode_batch(iree_tokenizer, inputs, add_special_tokens: false)
