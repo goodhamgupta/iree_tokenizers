@@ -1,6 +1,7 @@
 defmodule IREETokenizers.BatchIntegrationTest do
   use ExUnit.Case, async: false
 
+  alias IREE.Tokenizers.EncodeStream
   alias IREE.Tokenizers.Tokenizer, as: IREETokenizer
   alias Tokenizers.Encoding, as: HFEncoding
   alias Tokenizers.Tokenizer, as: HFTokenizer
@@ -239,6 +240,113 @@ defmodule IREETokenizers.BatchIntegrationTest do
     end
   end
 
+  test "superwhisper and DeepSeek GPT split variants keep whitespace branch priority" do
+    inputs = [
+      "   leading\t\ttabs\n\nnewlines   trailing   ",
+      "def f(x):\n    return [i**2 for i in range(x) if i % 2 == 0]\n",
+      "a   1",
+      "a  日",
+      "a   日本語",
+      "a   b",
+      "a   ",
+      "   ",
+      "   a",
+      "   1",
+      "   日",
+      "1   a",
+      "日   a",
+      "a   123   b",
+      "a   日本語   b",
+      "a\t\t1",
+      "a\n\n日",
+      "a \t  日",
+      "a\t\t!",
+      "a\t\t?",
+      "a\n\n!",
+      "a  !"
+    ]
+
+    # DeepSeek V4 Flash and Pro currently publish byte-identical tokenizer JSON,
+    # so one representative asset covers the shared regression in issues #52/#53.
+    tokenizers = [
+      {"superwhisper/s1-mini", "SUPERWHISPER_TOKENIZER_JSON"},
+      {"deepseek-ai/DeepSeek-V4-Flash-0731", "DEEPSEEK_V4_TOKENIZER_JSON"}
+    ]
+
+    for {repo, tokenizer_json_env} <- tokenizers do
+      tokenizer_json = System.get_env(tokenizer_json_env)
+
+      {iree_tokenizer, hf_tokenizer} =
+        if tokenizer_json do
+          {:ok, iree_tokenizer} = IREETokenizer.from_file(tokenizer_json)
+          {:ok, hf_tokenizer} = HFTokenizer.from_file(tokenizer_json)
+          {iree_tokenizer, hf_tokenizer}
+        else
+          {:ok, iree_tokenizer} = IREETokenizer.from_pretrained(repo)
+          {:ok, hf_tokenizer} = HFTokenizer.from_pretrained(repo)
+          {iree_tokenizer, hf_tokenizer}
+        end
+
+      for add_special_tokens <- [true, false] do
+        for input <- inputs do
+          {:ok, iree_encoding} =
+            IREETokenizer.encode(iree_tokenizer, input,
+              add_special_tokens: add_special_tokens,
+              track_offsets: true
+            )
+
+          {:ok, hf_encoding} =
+            HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: add_special_tokens)
+
+          assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
+          assert iree_encoding.tokens == HFEncoding.get_tokens(hf_encoding)
+          assert iree_encoding.type_ids == HFEncoding.get_type_ids(hf_encoding)
+          assert iree_encoding.offsets == HFEncoding.get_offsets(hf_encoding)
+
+          assert {:ok, iree_decoded} =
+                   IREETokenizer.decode(iree_tokenizer, iree_encoding.ids,
+                     skip_special_tokens: false
+                   )
+
+          assert {:ok, hf_decoded} =
+                   HFTokenizer.decode(hf_tokenizer, HFEncoding.get_ids(hf_encoding),
+                     skip_special_tokens: false
+                   )
+
+          assert iree_decoded == hf_decoded
+
+          {:ok, stream} =
+            EncodeStream.new(iree_tokenizer,
+              add_special_tokens: add_special_tokens,
+              max_chunk_bytes: 4
+            )
+
+          prefix_ids =
+            input
+            |> String.codepoints()
+            |> Enum.flat_map(fn chunk ->
+              {:ok, ids} = EncodeStream.feed(stream, chunk)
+              ids
+            end)
+
+          {:ok, suffix_ids} = EncodeStream.finalize(stream)
+          assert prefix_ids ++ suffix_ids == iree_encoding.ids
+        end
+
+        {:ok, iree_encodings} =
+          IREETokenizer.encode_batch(iree_tokenizer, inputs,
+            add_special_tokens: add_special_tokens
+          )
+
+        {:ok, hf_encodings} =
+          HFTokenizer.encode_batch(hf_tokenizer, inputs, add_special_tokens: add_special_tokens)
+
+        assert Enum.map(iree_encodings, & &1.ids) ==
+                 Enum.map(hf_encodings, &HFEncoding.get_ids/1)
+      end
+    end
+  end
+
   test "special token prefix false positive preserves metaspace BPE span" do
     input = "Try <|endoftext|> and <s> </s> <pad> <unk> [CLS] [SEP] in one line"
     tokenizer_json = System.get_env("BITCPM_TOKENIZER_JSON")
@@ -273,6 +381,59 @@ defmodule IREETokenizers.BatchIntegrationTest do
 
       assert iree_batch_encoding.ids == HFEncoding.get_ids(hf_batch_encoding)
     end
+  end
+
+  test "Supra Router preserves exact ByteLevel merge priority on long input" do
+    tokenizer_json = System.get_env("SUPRA_TOKENIZER_JSON")
+
+    {iree_tokenizer, hf_tokenizer} =
+      if tokenizer_json do
+        {:ok, iree_tokenizer} = IREETokenizer.from_file(tokenizer_json)
+        {:ok, hf_tokenizer} = HFTokenizer.from_file(tokenizer_json)
+        {iree_tokenizer, hf_tokenizer}
+      else
+        {:ok, iree_tokenizer} = IREETokenizer.from_pretrained("SupraLabs/Supra-Router-51M")
+        {:ok, hf_tokenizer} = HFTokenizer.from_pretrained("SupraLabs/Supra-Router-51M")
+        {iree_tokenizer, hf_tokenizer}
+      end
+
+    inputs = [
+      "xxxxxxxxxxxxxxxxUnicode",
+      String.duplicate(
+        "日本語のトークナイザーはUnicodeをうまく扱えますか？ 中文分词 한국어 테스트. ",
+        1024
+      )
+    ]
+
+    for add_special_tokens <- [true, false] do
+      for input <- inputs do
+        {:ok, iree_encoding} =
+          IREETokenizer.encode(iree_tokenizer, input, add_special_tokens: add_special_tokens)
+
+        {:ok, hf_encoding} =
+          HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: add_special_tokens)
+
+        assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
+      end
+
+      {:ok, iree_encodings} =
+        IREETokenizer.encode_batch(iree_tokenizer, inputs, add_special_tokens: add_special_tokens)
+
+      {:ok, hf_encodings} =
+        HFTokenizer.encode_batch(hf_tokenizer, inputs, add_special_tokens: add_special_tokens)
+
+      assert Enum.map(iree_encodings, & &1.ids) ==
+               Enum.map(hf_encodings, &HFEncoding.get_ids/1)
+    end
+
+    long_cjk = List.last(inputs)
+    <<head::binary-size(16_384), tail::binary>> = long_cjk
+    {:ok, one_shot} = IREETokenizer.encode(iree_tokenizer, long_cjk, add_special_tokens: false)
+    {:ok, stream} = EncodeStream.new(iree_tokenizer, add_special_tokens: false)
+    {:ok, head_ids} = EncodeStream.feed(stream, head)
+    {:ok, tail_ids} = EncodeStream.feed(stream, tail)
+    {:ok, final_ids} = EncodeStream.finalize(stream)
+    assert head_ids ++ tail_ids ++ final_ids == one_shot.ids
   end
 
   defp assert_batch_encoding_parity(iree_tokenizer, hf_tokenizer, inputs) do

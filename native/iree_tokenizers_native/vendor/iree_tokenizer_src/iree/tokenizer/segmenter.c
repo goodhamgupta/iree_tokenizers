@@ -16,6 +16,7 @@ void iree_tokenizer_segmenter_initialize(
     iree_host_size_t state_size) {
   segmenter->vtable = vtable;
   segmenter->state_size = state_size;
+  segmenter->flags = IREE_TOKENIZER_SEGMENTER_FLAG_NONE;
 }
 
 void iree_tokenizer_segmenter_free(iree_tokenizer_segmenter_t* segmenter) {

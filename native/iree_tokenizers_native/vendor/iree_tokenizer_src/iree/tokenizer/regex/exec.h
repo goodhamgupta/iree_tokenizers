@@ -246,6 +246,11 @@ typedef enum iree_tokenizer_regex_dfa_flag_bits_e {
   // Ranges are stored per-state and checked before pseudo-byte fallback.
   // This enables precise matching of Unicode ranges like [一-龥].
   IREE_TOKENIZER_UTIL_REGEX_DFA_FLAG_HAS_RANGES = 1 << 5,
+  // Prefer a confirmed lookahead accept over a longer fallback accept.
+  // This preserves leftmost-first behavior for selected Split patterns while
+  // still allowing the lookahead branch to consume through a finalized parent
+  // segment boundary.
+  IREE_TOKENIZER_UTIL_REGEX_DFA_FLAG_PREFER_LOOKAHEAD = 1 << 6,
 } iree_tokenizer_regex_dfa_flag_bits_t;
 typedef uint16_t iree_tokenizer_regex_dfa_flags_t;
 

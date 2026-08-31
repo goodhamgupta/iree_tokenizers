@@ -239,6 +239,16 @@ iree_status_t iree_tokenizer_parse_huggingface_json(
         !iree_string_view_equal(pre_tokenizer_value, IREE_SV("null"))) {
       status = iree_tokenizer_huggingface_parse_segmenter(
           pre_tokenizer_value, allocator, &segmenter, &pre_tokenizer_flags);
+      iree_string_view_t pre_tokenizer_type = iree_string_view_empty();
+      if (iree_status_is_ok(status)) {
+        status = iree_json_lookup_object_value(
+            pre_tokenizer_value, IREE_SV("type"), &pre_tokenizer_type);
+      }
+      if (iree_status_is_ok(status) &&
+          iree_string_view_equal(pre_tokenizer_type, IREE_SV("ByteLevel"))) {
+        pre_tokenizer_flags |=
+            IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_DIRECT_BYTE_LEVEL;
+      }
     }
   }
   if (iree_status_is_ok(status) && segmenter) {
@@ -394,6 +404,9 @@ iree_status_t iree_tokenizer_parse_huggingface_json(
 
   if (iree_status_is_ok(status) && normalizer) {
     iree_tokenizer_builder_set_normalizer(builder, normalizer);
+  } else if (iree_status_is_ok(status)) {
+    pre_tokenizer_flags |=
+        IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_IDENTITY_NORMALIZER;
   } else if (normalizer) {
     iree_tokenizer_normalizer_free(normalizer);
     normalizer = NULL;

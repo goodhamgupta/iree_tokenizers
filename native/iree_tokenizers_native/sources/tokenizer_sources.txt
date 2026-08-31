@@ -21,6 +21,7 @@ vendor/iree_tokenizer_src/iree/tokenizer/model/bpe.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/bpe_backtrack.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/bpe_cache.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/bpe_encode.c
+vendor/iree_tokenizer_src/iree/tokenizer/model/bpe_exact.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/bpe_heap.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/bpe_tables.c
 vendor/iree_tokenizer_src/iree/tokenizer/model/bpe_window.c

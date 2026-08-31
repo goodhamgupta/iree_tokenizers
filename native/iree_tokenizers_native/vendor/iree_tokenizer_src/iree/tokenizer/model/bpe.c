@@ -4,36 +4,14 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-// BPE (Byte-Pair Encoding) tokenization using sliding window algorithm.
+// BPE (Byte-Pair Encoding) model implementation.
 //
 // Standard BPE applies merge rules in priority order (lowest rank first), not
-// greedy longest-match. The naive algorithm is O(n*M) where M is merge count.
-// We use a sliding window with min-heap to achieve O(n log L) where L is the
-// maximum token length.
-//
-// CORRECTNESS PROOF (Frozen Token Theorem):
-// A token whose byte range ends at position p cannot be affected by any bytes
-// at position p + L or beyond, where L is the maximum token length. This is
-// because:
-// - A merge can only combine adjacent tokens
-// - The longest possible token spans L bytes
-// - For a token ending at p to change, a merge would need bytes beyond p
-// - But any token starting after p extends at most L bytes, reaching p + L
-// Therefore, once we've processed L bytes past p, the token at p is "frozen"
-// and can be safely emitted.
-//
-// ALGORITHM:
-// - Maintain a sliding window of at most 2*L tokens
-// - Use a min-heap of merge candidates ordered by rank (lowest = highest
-// priority)
-// - For each input byte: create token, add merge candidate with left neighbor
-// - Apply all possible merges in rank order (heap pop, validate, merge)
-// - Emit frozen tokens (end_byte <= current_position - L + 1)
-// - At segment end, flush remaining tokens
-//
-// COMPLEXITY:
-// - Time: O(n log L) where n = input length, L = max token length
-// - Memory: O(L) bounded, independent of input size
+// greedy longest-match. Eligible complete ByteLevel segments use an exact global heap
+// over the full segment (O(n log n) time, O(n) scratch) because merge-rank
+// dependencies can propagate arbitrarily far. Short non-ByteLevel segments use
+// the O(n) backtracking path. The older bounded-window implementation remains
+// only for legacy non-ByteLevel and native partial-segment paths.
 
 #include "iree/tokenizer/model/bpe.h"
 
@@ -130,8 +108,9 @@ iree_status_t iree_tokenizer_bpe_model_allocate(
 
   iree_status_t status = iree_ok_status();
 
-  // Window capacity is 2 * max_token_length (frozen theorem), rounded up to
-  // power of 2 for fast modulo via bitmask.
+  // Window capacity is 2 * max_token_length, rounded up to a power of two for
+  // fast modulo via bitmask. ByteLevel complete segments use the exact dynamic
+  // path; this fixed window remains for legacy non-ByteLevel/partial paths.
   iree_host_size_t min_window_capacity = 0;
   if (!iree_host_size_checked_mul(2, model->max_token_length,
                                   &min_window_capacity)) {
@@ -144,27 +123,8 @@ iree_status_t iree_tokenizer_bpe_model_allocate(
     model->window_capacity_mask = model->window_capacity - 1;
   }
 
-  // Heap capacity bounds proof:
-  //
-  // Let L = max_token_length, H = heap entries at apply_pending_merges call,
-  // W = window tokens at that call.
-  //
-  // Lemma 1: Peak heap during apply_pending_merges = H + (W - 1).
-  //   Each merge pops 1, adds ≤2 (net +1). Max merges = W - 1.
-  //
-  // Lemma 2: H ≤ L - 1 (except first call where H = L).
-  //   Heap drains after each apply_pending_merges. Between drains, add 1
-  //   entry per byte. Freeze when front.end_byte + L ≤ current + 1.
-  //   Max bytes between freezes = L - 1 (front.end_byte can grow by L - 1).
-  //
-  // Lemma 3: W ≤ 2L - 1.
-  //   For front NOT frozen: front.end_byte > current + 1 - L.
-  //   Since front.end_byte ≤ window_start + L, span < 2L, so W < 2L.
-  //
-  // First call: H = L, W = L + 1. Peak = L + L = 2L.
-  // Subsequent: H ≤ L - 1, W ≤ 2L - 1. Peak ≤ (L-1) + (2L-2) = 3L - 3.
-  //
-  // Maximum is 3L - 3 < 3L, so capacity = 3L suffices.
+  // Retain the existing fixed heap allowance for the legacy sliding-window
+  // path. Eligible exact segments allocate a segment-sized heap.
   if (iree_status_is_ok(status) &&
       !iree_host_size_checked_mul(3, model->max_token_length,
                                   &model->heap_capacity)) {
@@ -305,6 +265,32 @@ iree_status_t iree_tokenizer_bpe_model_set_end_of_word_suffix(
   return iree_ok_status();
 }
 
+void iree_tokenizer_bpe_model_enable_exact_complete_segments(
+    iree_tokenizer_model_t* base_model) {
+  IREE_ASSERT_ARGUMENT(base_model);
+  iree_tokenizer_bpe_model_t* model = (iree_tokenizer_bpe_model_t*)base_model;
+
+  const iree_tokenizer_bpe_flags_t required =
+      IREE_TOKENIZER_BPE_FLAG_BYTE_LEVEL_INPUT |
+      IREE_TOKENIZER_BPE_FLAG_ENABLE_WORD_CACHE |
+      IREE_TOKENIZER_BPE_FLAG_NO_BYTE_FALLBACK |
+      IREE_TOKENIZER_BPE_FLAG_IDENTITY_NORMALIZER |
+      IREE_TOKENIZER_BPE_FLAG_BYTE_LEVEL_REGEX |
+      IREE_TOKENIZER_BPE_FLAG_DIRECT_BYTE_LEVEL;
+  const iree_tokenizer_bpe_flags_t forbidden =
+      IREE_TOKENIZER_BPE_FLAG_IGNORE_MERGES |
+      IREE_TOKENIZER_BPE_FLAG_FUSE_UNK;
+  if (!iree_all_bits_set(model->flags, required) ||
+      iree_any_bit_set(model->flags, forbidden) ||
+      model->end_of_word_suffix_length != 0) {
+    return;
+  }
+
+  // Per-segment routing additionally verifies mapped-byte coverage and raw
+  // control-token ambiguity before entering the exact seeding path.
+  model->flags |= IREE_TOKENIZER_BPE_FLAG_EXACT_COMPLETE_SEGMENTS;
+}
+
 static void iree_tokenizer_bpe_model_destroy(
     iree_tokenizer_model_t* base_model) {
   IREE_TRACE_ZONE_BEGIN(z0);
@@ -340,6 +326,7 @@ static iree_status_t iree_tokenizer_bpe_state_initialize(
   state->segment.byte_position = 0;
   state->fast_path_pending_token_id = -1;
   state->last_emitted_token_id = -1;
+  iree_tokenizer_bpe_exact_reset(state);
 
   // Mark all bitfield words as dirty so the first backtrack_encode call
   // initializes them to UINT64_MAX (the bitfield storage is uninitialized).
@@ -378,7 +365,12 @@ static iree_status_t iree_tokenizer_bpe_state_initialize(
 static void iree_tokenizer_bpe_state_deinitialize(
     iree_tokenizer_model_state_t* state) {
   IREE_TRACE_ZONE_BEGIN(z0);
-  (void)state;
+  if (state) {
+    const iree_tokenizer_bpe_model_t* model =
+        (const iree_tokenizer_bpe_model_t*)state->model;
+    iree_tokenizer_bpe_exact_deinitialize(
+        model, (iree_tokenizer_bpe_state_t*)state);
+  }
   IREE_TRACE_ZONE_END(z0);
 }
 

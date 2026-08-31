@@ -673,6 +673,10 @@ iree_status_t iree_tokenizer_huggingface_parse_bpe_model(
   }
 
   if (iree_status_is_ok(status)) {
+    iree_tokenizer_bpe_model_enable_exact_complete_segments(model);
+  }
+
+  if (iree_status_is_ok(status)) {
     *out_model = model;
     *out_vocab = vocab;
   } else {
@@ -1169,6 +1173,21 @@ iree_status_t iree_tokenizer_huggingface_parse_model(
           pre_tokenizer_flags,
           IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_WORD_LEVEL_SPLIT)) {
     extra_flags |= IREE_TOKENIZER_BPE_FLAG_ENABLE_WORD_CACHE;
+  }
+  if (iree_any_bit_set(
+          pre_tokenizer_flags,
+          IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_IDENTITY_NORMALIZER)) {
+    extra_flags |= IREE_TOKENIZER_BPE_FLAG_IDENTITY_NORMALIZER;
+  }
+  if (iree_any_bit_set(
+          pre_tokenizer_flags,
+          IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_BYTE_LEVEL_REGEX)) {
+    extra_flags |= IREE_TOKENIZER_BPE_FLAG_BYTE_LEVEL_REGEX;
+  }
+  if (iree_any_bit_set(
+          pre_tokenizer_flags,
+          IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_DIRECT_BYTE_LEVEL)) {
+    extra_flags |= IREE_TOKENIZER_BPE_FLAG_DIRECT_BYTE_LEVEL;
   }
 
   // Dispatch to type-specific parser.

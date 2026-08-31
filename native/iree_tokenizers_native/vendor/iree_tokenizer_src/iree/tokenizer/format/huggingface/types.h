@@ -64,6 +64,13 @@ typedef enum iree_tokenizer_huggingface_pre_tokenizer_flag_bits_e {
   // removed before space→▁ replacement, matching HuggingFace's behavior where
   // WhitespaceSplit discards trailing whitespace before Metaspace runs.
   IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_HAS_WHITESPACE_SPLIT = 1u << 6,
+  // No explicit or synthesized normalizer is present. Exact ByteLevel BPE may
+  // opt in only when model input bytes are identical to source bytes.
+  IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_IDENTITY_NORMALIZER = 1u << 7,
+  // A ByteLevel component uses its built-in GPT-style regex splitting.
+  IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_BYTE_LEVEL_REGEX = 1u << 8,
+  // The top-level pre_tokenizer itself is ByteLevel (not a Sequence child).
+  IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_DIRECT_BYTE_LEVEL = 1u << 9,
 } iree_tokenizer_huggingface_pre_tokenizer_flag_bits_t;
 typedef uint32_t iree_tokenizer_huggingface_pre_tokenizer_flags_t;
 

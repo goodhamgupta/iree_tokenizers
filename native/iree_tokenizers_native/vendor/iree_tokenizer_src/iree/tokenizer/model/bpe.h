@@ -76,6 +76,14 @@ typedef enum iree_tokenizer_bpe_flag_bits_e {
   // Without word-level segmentation, input flows through the streaming partial
   // path and the cache is never consulted.
   IREE_TOKENIZER_BPE_FLAG_ENABLE_WORD_CACHE = 1 << 4,
+  // Loader signal: model input is not changed by a normalizer.
+  IREE_TOKENIZER_BPE_FLAG_IDENTITY_NORMALIZER = 1 << 5,
+  // Loader-verified opt-in to exact complete-segment ByteLevel BPE.
+  IREE_TOKENIZER_BPE_FLAG_EXACT_COMPLETE_SEGMENTS = 1 << 6,
+  // Loader signal: ByteLevel uses its built-in regex segmenter.
+  IREE_TOKENIZER_BPE_FLAG_BYTE_LEVEL_REGEX = 1 << 7,
+  // Loader signal: ByteLevel is the direct top-level pre-tokenizer.
+  IREE_TOKENIZER_BPE_FLAG_DIRECT_BYTE_LEVEL = 1 << 8,
 } iree_tokenizer_bpe_flag_bits_t;
 typedef uint32_t iree_tokenizer_bpe_flags_t;
 
@@ -109,6 +117,11 @@ iree_status_t iree_tokenizer_bpe_model_allocate(
 // |suffix| is the suffix to append (e.g., "</w>"). Pass empty for none.
 iree_status_t iree_tokenizer_bpe_model_set_end_of_word_suffix(
     iree_tokenizer_model_t* model, iree_string_view_t suffix);
+
+// Enables exact complete-segment routing only when the fully constructed model
+// satisfies the narrow proven-safe ByteLevel shape.
+void iree_tokenizer_bpe_model_enable_exact_complete_segments(
+    iree_tokenizer_model_t* model);
 
 #ifdef __cplusplus
 }  // extern "C"

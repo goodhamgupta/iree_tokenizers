@@ -1083,7 +1083,8 @@ fn infer_stream_encode_strategy(root: &Value) -> StreamEncodeStrategy {
     match model_type {
         Some("Unigram") => StreamEncodeStrategy::BufferedFinalize,
         Some("BPE")
-            if root.get("pre_tokenizer").is_none()
+            if is_exact_byte_level_bpe_candidate(root)
+                || root.get("pre_tokenizer").is_none()
                 || root.get("pre_tokenizer") == Some(&Value::Null)
                 || has_right_aligned_digit_split_pre_tokenizer(root)
                 || is_sentencepiece_bpe_decoder(root)
@@ -1093,6 +1094,48 @@ fn infer_stream_encode_strategy(root: &Value) -> StreamEncodeStrategy {
         }
         _ => StreamEncodeStrategy::Native,
     }
+}
+
+fn is_exact_byte_level_bpe_candidate(root: &Value) -> bool {
+    let Some(model) = root.get("model").and_then(Value::as_object) else {
+        return false;
+    };
+    if model.get("type").and_then(Value::as_str) != Some("BPE")
+        || model
+            .get("byte_fallback")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || model
+            .get("fuse_unk")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || model
+            .get("ignore_merges")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        || model
+            .get("end_of_word_suffix")
+            .is_some_and(|value| !value.is_null())
+    {
+        return false;
+    }
+
+    if root.get("normalizer").is_some_and(|value| !value.is_null()) {
+        return false;
+    }
+
+    let Some(pre_tokenizer) = root.get("pre_tokenizer").and_then(Value::as_object) else {
+        return false;
+    };
+    pre_tokenizer.get("type").and_then(Value::as_str) == Some("ByteLevel")
+        && pre_tokenizer
+            .get("use_regex")
+            .and_then(Value::as_bool)
+            .unwrap_or(true)
+        && !pre_tokenizer
+            .get("add_prefix_space")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
 }
 
 fn has_right_aligned_digit_split_pre_tokenizer(root: &Value) -> bool {
@@ -1362,12 +1405,18 @@ fn rewrite_split_regex(pattern: &str) -> Option<String> {
     rewrite_gpt_whitespace_fallback(pattern).or_else(|| rewrite_unsupported_lookahead(pattern))
 }
 
-fn rewrite_gpt_whitespace_fallback(pattern: &str) -> Option<String> {
-    const GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
-    const GPT_SPLIT_WITHOUT_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)";
+const QWEN_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+const SUPERWHISPER_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
-    if pattern == GPT_SPLIT_WITH_WHITESPACE_FALLBACK {
-        Some(GPT_SPLIT_WITHOUT_WHITESPACE_FALLBACK.to_owned())
+fn rewrite_gpt_whitespace_fallback(pattern: &str) -> Option<String> {
+    const TRAILING_WHITESPACE_FALLBACK: &str = r"|\s+";
+
+    if pattern == QWEN_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
+        || pattern == SUPERWHISPER_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
+    {
+        pattern
+            .strip_suffix(TRAILING_WHITESPACE_FALLBACK)
+            .map(str::to_owned)
     } else {
         None
     }
@@ -1542,13 +1591,43 @@ mod sanitize_tests {
     }
 
     #[test]
-    fn drops_gpt_whitespace_fallback_for_bytelevel_split_parity() {
-        let input = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
-        let out = rewrite_split_regex(input).expect("expected rewrite");
+    fn drops_qwen_gpt_whitespace_fallback_for_bytelevel_split_parity() {
+        let out =
+            rewrite_split_regex(QWEN_GPT_SPLIT_WITH_WHITESPACE_FALLBACK).expect("expected rewrite");
         assert_eq!(
             out,
             r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)"
         );
+    }
+
+    #[test]
+    fn drops_superwhisper_gpt_whitespace_fallback_for_bytelevel_split_parity() {
+        let out = rewrite_split_regex(SUPERWHISPER_GPT_SPLIT_WITH_WHITESPACE_FALLBACK)
+            .expect("expected rewrite");
+        assert_eq!(
+            out,
+            r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)"
+        );
+    }
+
+    #[test]
+    fn leaves_deepseek_gpt_whitespace_fallback_for_native_boundary_handling() {
+        let input = concat!(
+            r##"[!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+|[^"##,
+            "\r\n",
+            r##"\p{L}\p{P}\p{S}]?[\p{L}\p{M}]+| ?[\p{P}\p{S}]+["##,
+            "\r\n",
+            r##"]*|\s*["##,
+            "\r\n",
+            r##"]+|\s+(?!\S)|\s+"##,
+        );
+        assert!(rewrite_split_regex(input).is_none());
+    }
+
+    #[test]
+    fn leaves_motif_whitespace_fallback_unchanged() {
+        let input = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?: [\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+)*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?: [\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*)*(?i:'s|'t|'re|'ve|'m|'ll|'d)?|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+        assert!(rewrite_split_regex(input).is_none());
     }
 
     #[test]
@@ -1610,5 +1689,53 @@ mod sanitize_tests {
     fn sanitize_huggingface_json_no_change_returns_none() {
         let json = br#"{"pre_tokenizer": {"type": "ByteLevel"}}"#;
         assert!(sanitize_huggingface_json(json).is_none());
+    }
+
+    #[test]
+    fn buffers_streams_only_for_exact_byte_level_candidate() {
+        let exact = serde_json::json!({
+            "model": {"type": "BPE", "byte_fallback": false, "fuse_unk": false, "ignore_merges": false},
+            "normalizer": null,
+            "pre_tokenizer": {"type": "ByteLevel", "use_regex": true, "add_prefix_space": false}
+        });
+        assert!(is_exact_byte_level_bpe_candidate(&exact));
+        assert_eq!(
+            infer_stream_encode_strategy(&exact),
+            StreamEncodeStrategy::BufferedFinalize
+        );
+
+        for unsafe_root in [
+            serde_json::json!({
+                "model": {"type": "BPE", "ignore_merges": true},
+                "pre_tokenizer": {"type": "ByteLevel", "use_regex": true}
+            }),
+            serde_json::json!({
+                "model": {"type": "BPE"},
+                "pre_tokenizer": {"type": "ByteLevel", "use_regex": false}
+            }),
+            serde_json::json!({
+                "model": {"type": "BPE"},
+                "normalizer": {"type": "Lowercase"},
+                "pre_tokenizer": {"type": "ByteLevel", "use_regex": true}
+            }),
+        ] {
+            assert!(!is_exact_byte_level_bpe_candidate(&unsafe_root));
+            assert_eq!(
+                infer_stream_encode_strategy(&unsafe_root),
+                StreamEncodeStrategy::Native
+            );
+        }
+    }
+
+    #[test]
+    fn keeps_non_byte_level_bpe_streaming_native() {
+        let root = serde_json::json!({
+            "model": {"type": "BPE"},
+            "pre_tokenizer": {"type": "Whitespace"}
+        });
+        assert_eq!(
+            infer_stream_encode_strategy(&root),
+            StreamEncodeStrategy::Native
+        );
     }
 }

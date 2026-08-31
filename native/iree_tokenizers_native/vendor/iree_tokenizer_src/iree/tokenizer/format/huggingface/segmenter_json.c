@@ -35,6 +35,19 @@ static const char kGPT2RegexPattern[] =
 static const iree_string_view_t kThousandsSplitPattern =
     IREE_SVL("\\d{1,3}(?=(?:\\d{3})*\\b)");
 
+// DeepSeek V4 applies this Split after separate number and CJK Split children.
+// The final whitespace fallback must remain present so a finalized parent
+// slice such as "a   " keeps all trailing spaces together, but ordinary
+// whitespace before a letter must prefer the earlier lookahead branch.
+static const iree_string_view_t kDeepSeekV4SplitPattern = IREE_SVL(
+    "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n"
+    "\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+[\r\n"
+    "]*|\\s*[\r\n]+|\\s+(?!\\S)|\\s+");
+static const iree_string_view_t kDeepSeekV4CjkSplitPattern =
+    IREE_SVL("[一-龥぀-ゟ゠-ヿ]+");
+static const iree_string_view_t kDeepSeekV4NumberSplitPattern =
+    IREE_SVL("\\p{N}{1,3}");
+
 // Parses a ByteLevel pre_tokenizer and creates a Split segmenter.
 // JSON structure:
 //   {
@@ -90,7 +103,8 @@ static iree_status_t iree_tokenizer_parse_byte_level_pre_tokenizer(
 
   // ByteLevel with use_regex=true produces word-level segments via the GPT-2
   // regex, enabling the word cache optimization in the BPE model.
-  *out_flags |= IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_WORD_LEVEL_SPLIT;
+  *out_flags |= IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_WORD_LEVEL_SPLIT |
+                IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_BYTE_LEVEL_REGEX;
 
   // Compile the GPT-2 regex pattern to a DFA.
   iree_tokenizer_regex_dfa_t dfa;
@@ -238,11 +252,32 @@ static iree_status_t iree_tokenizer_parse_split_pre_tokenizer(
         compile_error.position, compile_error.message);
   }
 
+  bool is_deepseek_v4_split =
+      iree_string_view_equal(pattern, kDeepSeekV4SplitPattern);
+  bool is_deepseek_v4_cjk_split =
+      iree_string_view_equal(pattern, kDeepSeekV4CjkSplitPattern);
+  bool is_deepseek_v4_number_split =
+      iree_string_view_equal(pattern, kDeepSeekV4NumberSplitPattern);
+  if (is_deepseek_v4_split) {
+    // This is an executor policy bit only; it does not change the serialized
+    // DFA layout, and the loaded handle points at this same owned header.
+    iree_tokenizer_regex_dfa_header_t* header =
+        (iree_tokenizer_regex_dfa_header_t*)dfa_data;
+    header->flags |= IREE_TOKENIZER_UTIL_REGEX_DFA_FLAG_PREFER_LOOKAHEAD;
+  }
+
   // Create the Split segmenter. On failure, free DFA data.
   status = iree_tokenizer_segmenter_split_allocate(
       dfa, dfa_data, behavior, invert, allocator, out_segmenter);
   if (!iree_status_is_ok(status)) {
     iree_allocator_free(allocator, dfa_data);
+  } else if (is_deepseek_v4_split) {
+    (*out_segmenter)->flags |= IREE_TOKENIZER_SEGMENTER_FLAG_DEEPSEEK_MAIN_HINT;
+  } else if (is_deepseek_v4_cjk_split) {
+    (*out_segmenter)->flags |= IREE_TOKENIZER_SEGMENTER_FLAG_DEEPSEEK_CJK_HINT;
+  } else if (is_deepseek_v4_number_split) {
+    (*out_segmenter)->flags |=
+        IREE_TOKENIZER_SEGMENTER_FLAG_DEEPSEEK_NUMBER_HINT;
   }
   return status;
 }
@@ -340,6 +375,24 @@ static iree_status_t iree_tokenizer_parse_sequence_pre_tokenizer(
         element_value, allocator, &child, out_flags);
     if (iree_status_is_ok(status) && child) {
       children[child_count++] = child;
+    }
+  }
+
+  // Enable the boundary-sensitive path only for the exact ordered DeepSeek V4
+  // composition. The common number and CJK patterns are hints, not behavior
+  // switches, when used alone or in any other Sequence shape.
+  bool ordered_parent_probe =
+      child_count == 3 &&
+      iree_any_bit_set(
+          children[0]->flags,
+          IREE_TOKENIZER_SEGMENTER_FLAG_DEEPSEEK_NUMBER_HINT) &&
+      iree_any_bit_set(children[1]->flags,
+                       IREE_TOKENIZER_SEGMENTER_FLAG_DEEPSEEK_CJK_HINT) &&
+      iree_any_bit_set(children[2]->flags,
+                       IREE_TOKENIZER_SEGMENTER_FLAG_DEEPSEEK_MAIN_HINT);
+  if (ordered_parent_probe) {
+    for (iree_host_size_t i = 0; i < child_count; ++i) {
+      children[i]->flags |= IREE_TOKENIZER_SEGMENTER_FLAG_ORDERED_PARENT_PROBE;
     }
   }
 

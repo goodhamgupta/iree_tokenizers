@@ -22,8 +22,8 @@ void iree_tokenizer_bpe_heap_reset(iree_tokenizer_bpe_heap_t* heap) {
 
 void iree_tokenizer_bpe_heap_push(iree_tokenizer_bpe_heap_t* heap,
                                   iree_tokenizer_bpe_heap_entry_t entry) {
-  // Hard check: capacity is a proven bound (3 * max_token_length).
-  // Exceeding it indicates a bug in the BPE algorithm, not user input.
+  // Hard check: callers must provide enough fixed or segment-sized storage.
+  // Exceeding it indicates an internal capacity calculation bug.
   if (IREE_UNLIKELY(heap->size >= heap->capacity)) {
     IREE_ASSERT_UNREACHABLE("BPE heap overflow: size=%" PRIhsz
                             " capacity=%" PRIhsz
