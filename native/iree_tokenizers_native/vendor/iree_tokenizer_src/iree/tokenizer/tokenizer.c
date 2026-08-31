@@ -2292,6 +2292,11 @@ static bool iree_tokenizer_try_emit_pending_special_token(
                                                  *total_tokens, 1);
     (*total_tokens)++;
     state->pending_special_token = -1;
+    bool first_consumed = state->first_consumed_by_special_token;
+    iree_tokenizer_encode_state_reset_internal(
+        state, state->flags,
+        IREE_TOKENIZER_ENCODE_STATE_RESET_FLAG_PRESERVE_POSTPROCESSOR);
+    state->first_consumed_by_special_token = first_consumed;
     return true;
   }
   return false;
@@ -2675,10 +2680,10 @@ static iree_status_t iree_tokenizer_encode_state_pump(
       if (safe == 0) {
         should_match = true;
       } else {
-        // Check if the potential token at position safe has LSTRIP.
-        // If so, strip trailing whitespace from the normalize limit to prevent
-        // the whitespace from being tokenized (RoBERTa/BART <mask> with
-        // lstrip=true).
+        // Check if the potential token at position safe can match. If it
+        // cannot, keep normalizing through it so a failed special-token prefix
+        // does not introduce an artificial segment boundary before ordinary
+        // text such as " <|not_a_special|>".
         if (safe < chunk->size) {
           iree_string_view_t check_view = {
               .data = chunk->data + safe,
@@ -2691,7 +2696,21 @@ static iree_status_t iree_tokenizer_encode_state_pump(
               iree_tokenizer_special_tokens_match(&tokenizer->special_tokens,
                                                   check_view, &check_length,
                                                   &check_id, &check_state);
-          if (check_result != IREE_TOKENIZER_SPECIAL_TOKENS_NO_MATCH) {
+          if (check_result == IREE_TOKENIZER_SPECIAL_TOKENS_NO_MATCH) {
+            if (safe + 1 < chunk->size) {
+              iree_host_size_t next_safe =
+                  iree_tokenizer_special_tokens_safe_prefix_length(
+                      &tokenizer->special_tokens,
+                      iree_make_string_view(chunk->data + safe + 1,
+                                            chunk->size - safe - 1));
+              safe += 1 + next_safe;
+            } else {
+              safe = chunk->size;
+            }
+          } else {
+            // If the potential token has LSTRIP, strip trailing whitespace from
+            // the normalize limit to prevent the whitespace from being tokenized
+            // (RoBERTa/BART <mask> with lstrip=true).
             iree_host_size_t original_safe = safe;
             safe = iree_tokenizer_strip_lstrip_whitespace(
                 &tokenizer->special_tokens,
@@ -2766,10 +2785,15 @@ static iree_status_t iree_tokenizer_encode_state_pump(
         } else {
           // Pipeline empty, emit immediately.
           if (output->capacity > *total_tokens) {
+            bool first_consumed = state->first_consumed_by_special_token;
             output->token_ids[*total_tokens] = match_id;
             iree_tokenizer_postprocessor_assign_type_ids(
                 &state->postprocessor, *output, *total_tokens, 1);
             (*total_tokens)++;
+            iree_tokenizer_encode_state_reset_internal(
+                state, state->flags,
+                IREE_TOKENIZER_ENCODE_STATE_RESET_FLAG_PRESERVE_POSTPROCESSOR);
+            state->first_consumed_by_special_token = first_consumed;
           }
         }
         return iree_ok_status();
