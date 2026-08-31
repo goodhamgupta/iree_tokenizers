@@ -689,7 +689,16 @@ static inline iree_status_t iree_tokenizer_regex_emit_match(
   bool has_match = false;
 
   if (state->has_accept && state->has_accept_fallback) {
-    bool prefer_longer = state->last_accept_fallback > state->last_accept;
+    // The marked DeepSeek pattern's lookahead whitespace branch is branch 4.
+    // Earlier branches (notably its newline branch) must retain the normal
+    // longest-fallback behavior when they win.
+    bool prefer_lookahead =
+        iree_any_bit_set(
+            dfa->header->flags,
+            IREE_TOKENIZER_UTIL_REGEX_DFA_FLAG_PREFER_LOOKAHEAD) &&
+        state->best_branch_idx == 4;
+    bool prefer_longer = !prefer_lookahead &&
+                         state->last_accept_fallback > state->last_accept;
 
     if (prefer_longer) {
       // Hugging Face tokenizers uses the longest accepted fallback span for

@@ -38,6 +38,32 @@ typedef struct iree_tokenizer_bpe_window_token_t {
   uint32_t end_byte;
 } iree_tokenizer_bpe_window_token_t;
 
+// Stable linked-list node used by the exact complete-segment BPE path.
+// Nodes never move after seeding, so heap entries can use the node index as a
+// deterministic left-position key while merges unlink consumed right nodes.
+#define IREE_TOKENIZER_BPE_EXACT_INVALID_INDEX UINT32_MAX
+typedef struct iree_tokenizer_bpe_exact_node_t {
+  int32_t token_id;
+  uint32_t start_byte;
+  uint32_t end_byte;
+  uint32_t prev;
+  uint32_t next;
+} iree_tokenizer_bpe_exact_node_t;
+
+// Dynamically-sized scratch for exact global BPE over an eligible complete
+// ByteLevel segment. Allocations grow on demand and are reused by later segments in the
+// same model state. They are released only when the state is deinitialized.
+typedef struct iree_tokenizer_bpe_exact_state_t {
+  iree_tokenizer_bpe_exact_node_t* nodes;
+  iree_host_size_t node_capacity;
+  iree_tokenizer_bpe_heap_entry_t* heap_entries;
+  iree_host_size_t heap_capacity;
+  iree_host_size_t node_count;
+  uint32_t head;
+  uint32_t tail;
+  uint32_t emit_index;
+} iree_tokenizer_bpe_exact_state_t;
+
 // Inverse merge entry: for a token formed by a merge, stores its constituents.
 // Base tokens (single-byte, added, not from any merge) store (self, self).
 typedef struct iree_tokenizer_bpe_split_entry_t {
@@ -242,8 +268,8 @@ typedef enum iree_tokenizer_bpe_phase_e {
   // Fast-path token matched but couldn't emit (output was full).
   // Next call should emit fast_path_pending_token_id and complete segment.
   IREE_TOKENIZER_BPE_PHASE_FAST_PATH_PENDING,
-  // Processing bytes: adding tokens to window, applying merges, emitting
-  // frozen. segment.byte_position tracks progress.
+  // Legacy partial path: adding tokens to the bounded window and emitting at
+  // its heuristic threshold. segment.byte_position tracks progress.
   IREE_TOKENIZER_BPE_PHASE_BYTE_LOOP,
   // All bytes processed. Applying final merges and emitting remaining tokens.
   IREE_TOKENIZER_BPE_PHASE_FLUSH,
@@ -251,6 +277,8 @@ typedef enum iree_tokenizer_bpe_phase_e {
   IREE_TOKENIZER_BPE_PHASE_BACKTRACK,
   // Backtracking path: emitting tokens from the completed stack.
   IREE_TOKENIZER_BPE_PHASE_BACKTRACK_EMIT,
+  // Exact complete-segment path: emitting globally merged ByteLevel tokens.
+  IREE_TOKENIZER_BPE_PHASE_EXACT_EMIT,
 } iree_tokenizer_bpe_phase_t;
 
 // BPE encoding state with trailing window and heap buffers.
@@ -282,6 +310,9 @@ typedef struct iree_tokenizer_bpe_state_t {
 
   // Backtracking state (used in BACKTRACK/BACKTRACK_EMIT phases).
   iree_tokenizer_bpe_backtrack_state_t backtrack;
+
+  // Exact global-heap state for eligible complete ByteLevel segments.
+  iree_tokenizer_bpe_exact_state_t exact;
 
   // Trailing buffers (accessed via model offsets):
   // - iree_tokenizer_bpe_window_token_t window_tokens[window_capacity]
@@ -743,8 +774,8 @@ void iree_tokenizer_bpe_maybe_add_merge(iree_tokenizer_bpe_state_t* state,
 void iree_tokenizer_bpe_apply_pending_merges(
     iree_tokenizer_bpe_state_t* state, const iree_tokenizer_bpe_model_t* model);
 
-// Emits all frozen tokens from the window front.
-// Returns false if output fills before all frozen tokens are emitted.
+// Emits tokens eligible under the legacy window threshold.
+// Returns false if output fills before all eligible tokens are emitted.
 bool iree_tokenizer_bpe_emit_frozen_tokens(
     iree_tokenizer_bpe_state_t* state, const iree_tokenizer_bpe_model_t* model,
     iree_host_size_t current_byte_position,
@@ -788,6 +819,31 @@ void iree_tokenizer_bpe_apply_suffix_to_backtrack(
 void iree_tokenizer_bpe_apply_suffix_to_last_window_token(
     const iree_tokenizer_bpe_model_t* model, iree_tokenizer_bpe_state_t* state,
     iree_string_view_t segment);
+
+//===----------------------------------------------------------------------===//
+// Exact Complete-Segment BPE (bpe_exact.c)
+//===----------------------------------------------------------------------===//
+
+// Returns whether this segment is safe for one-mapped-node-per-byte seeding.
+bool iree_tokenizer_bpe_exact_can_encode(
+    const iree_tokenizer_bpe_model_t* model, iree_string_view_t segment);
+
+// Builds an exact canonical BPE result for one eligible complete segment.
+iree_status_t iree_tokenizer_bpe_exact_prepare(
+    const iree_tokenizer_bpe_model_t* model, iree_tokenizer_bpe_state_t* state,
+    iree_string_view_t segment);
+
+// Emits prepared exact nodes until complete or the output cursor fills.
+bool iree_tokenizer_bpe_exact_emit(iree_tokenizer_bpe_state_t* state,
+                                   iree_tokenizer_bpe_output_cursor_t* cursor);
+
+// Clears prepared logical state while retaining allocated scratch for reuse.
+void iree_tokenizer_bpe_exact_reset(iree_tokenizer_bpe_state_t* state);
+
+// Releases all dynamically allocated exact-path scratch.
+void iree_tokenizer_bpe_exact_deinitialize(
+    const iree_tokenizer_bpe_model_t* model,
+    iree_tokenizer_bpe_state_t* state);
 
 //===----------------------------------------------------------------------===//
 // Encoding State Machine (bpe_encode.c)

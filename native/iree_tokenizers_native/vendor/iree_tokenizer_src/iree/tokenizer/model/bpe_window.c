@@ -4,12 +4,12 @@
 // See https://llvm.org/LICENSE.txt for license information.
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
-// Window and heap operations for the O(n log L) sliding window BPE algorithm.
+// Window and heap operations for the legacy bounded BPE path.
 //
-// The sliding window maintains a bounded set of tokens (at most 2*L where L
-// is the maximum token length). Tokens whose byte range ends before the
-// "freeze point" (current position - L + 1) cannot be affected by future
-// input and can be safely emitted.
+// Canonical BPE dependencies are not generally bounded by maximum token
+// length. Loader- and segment-eligible ByteLevel inputs therefore bypass this
+// file and use the exact global heap in bpe_exact.c. This window remains for legacy
+// non-ByteLevel and native partial-segment behavior.
 //
 // The min-heap tracks merge candidates ordered by rank. Stale entries (where
 // tokens have already merged) are lazily invalidated on pop.
@@ -206,22 +206,18 @@ void iree_tokenizer_bpe_apply_pending_merges(
   }
 }
 
-// Emits all frozen tokens from the window front.
-// A token ending at position p is frozen when current_byte >= p +
-// max_token_length. Before emitting, applies all pending merges to ensure
-// correctness. Returns false if output fills before all frozen tokens are
-// emitted.
+// Emits tokens eligible under the legacy bounded-window heuristic. Complete
+// ByteLevel segments bypass this approximation and use the exact global heap.
 bool iree_tokenizer_bpe_emit_frozen_tokens(
     iree_tokenizer_bpe_state_t* state, const iree_tokenizer_bpe_model_t* model,
     iree_host_size_t current_byte_position,
     iree_tokenizer_bpe_output_cursor_t* cursor) {
   iree_host_size_t max_token_length = model->max_token_length;
-
   while (state->window.count > 0) {
     iree_tokenizer_bpe_window_token_t* front =
         iree_tokenizer_bpe_window_at(state, model, 0);
 
-    // Check if the front token is frozen (can't be affected by future input).
+    // Check whether the front reaches the legacy emission threshold.
     if (front->end_byte + max_token_length > current_byte_position + 1) {
       break;  // Not frozen yet.
     }
@@ -232,7 +228,7 @@ bool iree_tokenizer_bpe_emit_frozen_tokens(
     // Re-fetch front (may have changed due to merges).
     front = iree_tokenizer_bpe_window_at(state, model, 0);
 
-    // Re-check frozen condition after merges.
+    // Re-check the threshold after merges.
     if (front->end_byte + max_token_length > current_byte_position + 1) {
       break;  // Merge extended the token, no longer frozen.
     }

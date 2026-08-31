@@ -1,0 +1,49 @@
+{
+  "version": "1.0",
+  "pre_tokenizer": {
+    "type": "ByteLevel",
+    "add_prefix_space": false,
+    "trim_offsets": true,
+    "use_regex": true
+  },
+  "decoder": {
+    "type": "ByteLevel",
+    "add_prefix_space": false,
+    "trim_offsets": true
+  },
+  "model": {
+    "type": "BPE",
+    "unk_token": null,
+    "byte_fallback": false,
+    "fuse_unk": false,
+    "vocab": {
+      "a": 0,
+      "b": 1,
+      "c": 2,
+      "d": 3,
+      "e": 4,
+      "f": 5,
+      "g": 6,
+      "h": 7,
+      "i": 8,
+      "hi": 9,
+      "fg": 10,
+      "de": 11,
+      "bc": 12,
+      "ab": 13,
+      "cd": 14,
+      "ef": 15,
+      "gh": 16
+    },
+    "merges": [
+      "h i",
+      "f g",
+      "d e",
+      "b c",
+      "a b",
+      "c d",
+      "e f",
+      "g h"
+    ]
+  }
+}

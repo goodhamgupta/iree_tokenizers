@@ -836,12 +836,15 @@ static iree_status_t iree_tokenizer_segmenter_split_state_process(
         iree_tokenizer_regex_exec_initialize(&self->regex_state,
                                              &segmenter->regex.dfa);
       }
-      // Set deferred flag only when capping specifically for the pending regex
-      // match case that previously used wraparound arithmetic. This preserves
-      // has_pending()=true for ISOLATED+invert mode, which relies on it.
-      // For other cases (should_cap_trailing), the original behavior was
-      // has_pending()=false after capping.
-      self->deferred_to_finalize = has_pending_regex_match && uses_wraparound;
+      // Preserve pending visibility for modes that rely on wraparound and for
+      // ordered Sequence children whose parent boundary must not be skipped by
+      // a later child's progress probe.
+      bool preserve_ordered_parent_boundary = iree_any_bit_set(
+          segmenter->base.flags,
+          IREE_TOKENIZER_SEGMENTER_FLAG_ORDERED_PARENT_PROBE);
+      self->deferred_to_finalize =
+          has_pending_regex_match &&
+          (uses_wraparound || preserve_ordered_parent_boundary);
     } else {
       *out_consumed = input.size;
       self->deferred_to_finalize = false;

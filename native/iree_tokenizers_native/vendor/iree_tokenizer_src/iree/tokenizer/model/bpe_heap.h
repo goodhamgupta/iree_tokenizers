@@ -66,15 +66,9 @@ static inline bool iree_tokenizer_bpe_heap_entry_less(
 // element at index i is at (i-1)/2 and children are at 2i+1 and 2i+2. The
 // minimum element (lowest rank = highest priority merge) is always at index 0.
 //
-// The heap uses pre-allocated storage provided at initialization time. This
-// allows the BPE state to allocate the heap buffer as part of a single slab
-// allocation, avoiding per-operation allocations during encoding.
-//
-// Capacity is 3*max_token_length, derived from rigorous analysis:
-// - Peak heap = H + (W - 1) where H = entries at call, W = window tokens
-// - H ≤ L - 1 (bytes added between heap drains), W ≤ 2L - 1 (window bound)
-// - Peak ≤ (L - 1) + (2L - 2) = 3L - 3 < 3L
-// Exceeding capacity indicates a bug in the algorithm.
+// The heap uses caller-provided storage. The legacy window initializes it from
+// fixed state storage; exact complete-segment BPE initializes it from dynamic
+// segment-sized scratch.
 typedef struct iree_tokenizer_bpe_heap_t {
   iree_tokenizer_bpe_heap_entry_t* entries;
   iree_host_size_t capacity;

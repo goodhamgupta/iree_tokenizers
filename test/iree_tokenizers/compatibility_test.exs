@@ -100,6 +100,90 @@ defmodule IREETokenizers.CompatibilityTest do
     assert Encoding.get_tokens(iree_encoding) == ["Ġ", "ðŁĳ©"]
   end
 
+  test "exact byte-level BPE preserves future lower-rank merge priority" do
+    fixture = fixture_path("bpe_bytelevel_window_frontier.json")
+    {:ok, iree_tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, hf_tokenizer} = HFTokenizer.from_file(fixture)
+
+    # The legacy bounded path sees `ic + o` before the lower-rank future chain
+    # `o + d`, `od + e`. The exact path must apply one global merge order.
+    input = "xxxxxxxxxxxUnicode"
+
+    {:ok, iree_encoding} = Tokenizer.encode(iree_tokenizer, input, add_special_tokens: false)
+    {:ok, hf_encoding} = HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: false)
+
+    assert Encoding.get_ids(iree_encoding) == HFEncoding.get_ids(hf_encoding)
+    assert Encoding.get_tokens(iree_encoding) == HFEncoding.get_tokens(hf_encoding)
+    assert Enum.take(Encoding.get_tokens(iree_encoding), -3) == ["Un", "ic", "ode"]
+
+    # Force the Rust wrapper's bounded output retry. Exact-path allocations are
+    # released with the failed native state and rebuilt without double-free.
+    retry_input = String.duplicate("x", 256)
+
+    {:ok, iree_retry} =
+      Tokenizer.encode(iree_tokenizer, retry_input,
+        add_special_tokens: false,
+        track_offsets: true
+      )
+
+    {:ok, hf_retry} =
+      HFTokenizer.encode(hf_tokenizer, retry_input, add_special_tokens: false)
+
+    assert Encoding.get_ids(iree_retry) == HFEncoding.get_ids(hf_retry)
+    assert Encoding.get_offsets(iree_retry) == HFEncoding.get_offsets(hf_retry)
+
+    newline_input = String.duplicate("\n", 4096)
+
+    {:ok, iree_newlines} =
+      Tokenizer.encode(iree_tokenizer, newline_input, add_special_tokens: false)
+
+    {:ok, hf_newlines} =
+      HFTokenizer.encode(hf_tokenizer, newline_input, add_special_tokens: false)
+
+    assert Encoding.get_ids(iree_newlines) == HFEncoding.get_ids(hf_newlines)
+  end
+
+  test "byte-level BPE applies one global rank order across long dependency chains" do
+    fixture = fixture_path("bpe_bytelevel_rank_chain.json")
+    {:ok, iree_tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, hf_tokenizer} = HFTokenizer.from_file(fixture)
+
+    {:ok, iree_encoding} =
+      Tokenizer.encode(iree_tokenizer, "abcdefghi", add_special_tokens: false)
+
+    {:ok, hf_encoding} =
+      HFTokenizer.encode(hf_tokenizer, "abcdefghi", add_special_tokens: false)
+
+    assert Encoding.get_ids(iree_encoding) == HFEncoding.get_ids(hf_encoding)
+    assert Encoding.get_tokens(iree_encoding) == ["a", "bc", "de", "fg", "hi"]
+
+    assert {:ok, empty} = Tokenizer.encode(iree_tokenizer, "", add_special_tokens: false)
+    assert Encoding.get_ids(empty) == []
+  end
+
+  test "byte-level streams buffer before exact finalize even with a tiny ring" do
+    fixture = fixture_path("bpe_bytelevel_rank_chain.json")
+
+    json =
+      fixture
+      |> File.read!()
+      |> Jason.decode!()
+      |> put_in(["model", "vocab", String.duplicate("z", 1000)], 17)
+      |> Jason.encode!()
+
+    {:ok, tokenizer} = Tokenizer.from_buffer(json)
+    input = "abcdefghi"
+    {:ok, one_shot} = Tokenizer.encode(tokenizer, input, add_special_tokens: false)
+    {:ok, stream} = EncodeStream.new(tokenizer, add_special_tokens: false, max_chunk_bytes: 1)
+
+    for <<byte <- input>> do
+      assert {:ok, []} = EncodeStream.feed(stream, <<byte>>)
+    end
+
+    assert {:ok, streamed_ids} = EncodeStream.finalize(stream)
+    assert streamed_ids == Encoding.get_ids(one_shot)
+  end
+
   test "loads BPE tokenizer.json whose unk_token is absent from vocab (issue #9)" do
     # Laguna-XS.2 declares `unk_token: "[UNK]"` but never adds `[UNK]` to
     # vocab. HF's reference loader treats that as a soft failure (UNK just
@@ -138,6 +222,127 @@ defmodule IREETokenizers.CompatibilityTest do
 
     assert is_list(Encoding.get_ids(encoding))
     assert Encoding.get_ids(encoding) != []
+  end
+
+  test "DeepSeek-style Sequence preserves whitespace at digit and CJK parent boundaries" do
+    fixture = fixture_path("deepseek_sequence_whitespace_boundary.json")
+    {:ok, iree_tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, hf_tokenizer} = HFTokenizer.from_file(fixture)
+
+    cases = [
+      {"a   b", ["a", "ĠĠ", "Ġb"]},
+      {"a   1", ["a", "ĠĠĠ", "1"]},
+      {"a  日", ["a", "ĠĠ", "æĹ¥"]},
+      {"a   日", ["a", "ĠĠĠ", "æĹ¥"]},
+      {"a   ", ["a", "ĠĠĠ"]},
+      {"a\t\t!", ["a", "ĉ", "ĉ", "!"]},
+      {"a\t\t?", ["a", "ĉ", "ĉ", "?"]},
+      {"a\n\n!", ["a", "ĊĊ", "!"]},
+      {"a  !", ["a", "Ġ", "Ġ!"]}
+    ]
+
+    for add_special_tokens <- [true, false] do
+      for {input, expected_tokens} <- cases do
+        {:ok, iree_encoding} =
+          Tokenizer.encode(iree_tokenizer, input,
+            add_special_tokens: add_special_tokens,
+            track_offsets: true
+          )
+
+        {:ok, hf_encoding} =
+          HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: add_special_tokens)
+
+        assert Encoding.get_ids(iree_encoding) == HFEncoding.get_ids(hf_encoding)
+        assert Encoding.get_tokens(iree_encoding) == expected_tokens
+        assert Encoding.get_tokens(iree_encoding) == HFEncoding.get_tokens(hf_encoding)
+        assert Encoding.get_type_ids(iree_encoding) == HFEncoding.get_type_ids(hf_encoding)
+        assert Encoding.get_offsets(iree_encoding) == HFEncoding.get_offsets(hf_encoding)
+
+        assert {:ok, iree_decoded} =
+                 Tokenizer.decode(iree_tokenizer, Encoding.get_ids(iree_encoding),
+                   skip_special_tokens: false
+                 )
+
+        assert {:ok, hf_decoded} =
+                 HFTokenizer.decode(hf_tokenizer, HFEncoding.get_ids(hf_encoding),
+                   skip_special_tokens: false
+                 )
+
+        assert iree_decoded == hf_decoded
+
+        {:ok, stream} =
+          EncodeStream.new(iree_tokenizer,
+            add_special_tokens: add_special_tokens,
+            max_chunk_bytes: 4
+          )
+
+        prefix_ids =
+          input
+          |> String.codepoints()
+          |> Enum.flat_map(fn chunk ->
+            {:ok, ids} = EncodeStream.feed(stream, chunk)
+            ids
+          end)
+
+        {:ok, suffix_ids} = EncodeStream.finalize(stream)
+        assert prefix_ids ++ suffix_ids == Encoding.get_ids(iree_encoding)
+      end
+
+      inputs = Enum.map(cases, &elem(&1, 0))
+
+      {:ok, iree_batch} =
+        Tokenizer.encode_batch(iree_tokenizer, inputs, add_special_tokens: add_special_tokens)
+
+      {:ok, hf_batch} =
+        HFTokenizer.encode_batch(hf_tokenizer, inputs, add_special_tokens: add_special_tokens)
+
+      assert Enum.map(iree_batch, &Encoding.get_ids/1) ==
+               Enum.map(hf_batch, &HFEncoding.get_ids/1)
+    end
+  end
+
+  test "common number and CJK Split sequence keeps default probing semantics" do
+    fixture = fixture_path("deepseek_sequence_whitespace_boundary.json")
+
+    root = fixture |> File.read!() |> Jason.decode!()
+    pretokenizers = get_in(root, ["pre_tokenizer", "pretokenizers"])
+
+    # Keep the common number/CJK children but remove the exact DeepSeek main
+    # Split. These children alone must not opt the Sequence into its special
+    # parent-boundary policy.
+    generic_pretokenizers = [
+      Enum.at(pretokenizers, 0),
+      Enum.at(pretokenizers, 1),
+      List.last(pretokenizers)
+    ]
+
+    json =
+      root
+      |> put_in(["pre_tokenizer", "pretokenizers"], generic_pretokenizers)
+      |> Jason.encode!()
+
+    {:ok, iree_tokenizer} = Tokenizer.from_buffer(json)
+    {:ok, hf_tokenizer} = HFTokenizer.from_buffer(json)
+
+    inputs = ["a   1", "a   日", "a\t\t!", "a\n\n!"]
+
+    for add_special_tokens <- [true, false], input <- inputs do
+      {:ok, iree_encoding} =
+        Tokenizer.encode(iree_tokenizer, input,
+          add_special_tokens: add_special_tokens,
+          track_offsets: true
+        )
+
+      {:ok, hf_encoding} =
+        HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: add_special_tokens)
+
+      assert Encoding.get_ids(iree_encoding) == HFEncoding.get_ids(hf_encoding)
+      assert Encoding.get_tokens(iree_encoding) == HFEncoding.get_tokens(hf_encoding)
+      assert Encoding.get_offsets(iree_encoding) == HFEncoding.get_offsets(hf_encoding)
+    end
+
+    {:ok, tab_encoding} = Tokenizer.encode(iree_tokenizer, "a\t\t!", add_special_tokens: false)
+    assert Encoding.get_tokens(tab_encoding) == ["a", "ĉĉ", "!"]
   end
 
   test "loads tokenizer.json with LongCat-style Unicode punctuation Split pre_tokenizer" do

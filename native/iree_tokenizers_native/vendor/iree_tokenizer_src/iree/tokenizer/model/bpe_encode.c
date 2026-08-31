@@ -10,7 +10,8 @@
 // tokenization. The state machine handles:
 // - Fast-path whole-segment matching (single-token optimization)
 // - O(n) backtracking for short segments
-// - O(n log L) sliding window for long segments
+// - Exact O(n log n) global-heap BPE for eligible complete ByteLevel segments
+// - Legacy bounded-window processing for other long/partial segments
 // - Streaming partial segment processing
 
 #include "iree/tokenizer/model/bpe_internal.h"
@@ -105,6 +106,7 @@ static bool iree_tokenizer_bpe_segment_contains_raw_control_whitespace(
 //   SEGMENT_START: Initial state. Try fast-path trie match, else route.
 //   FAST_PATH_PENDING: Fast-path token matched but output was full.
 //   BACKTRACK_EMIT: Emitting tokens from the backtrack stack.
+//   EXACT_EMIT: Emitting a globally merged complete ByteLevel segment.
 //   BYTE_LOOP: Processing input bytes, building window, emitting frozen tokens.
 //   FLUSH: All bytes processed, emitting remaining window tokens.
 //
@@ -113,9 +115,12 @@ static bool iree_tokenizer_bpe_segment_contains_raw_control_whitespace(
 //   SEGMENT_START -> [complete] (fast-path: whole segment = one token)
 //   SEGMENT_START -> FAST_PATH_PENDING (fast-path match, output full)
 //   SEGMENT_START -> BACKTRACK_EMIT (short segment, backtracking path)
+//   SEGMENT_START -> EXACT_EMIT (complete ByteLevel segment)
 //   FAST_PATH_PENDING -> [complete] (emit pending token)
 //   BACKTRACK_EMIT -> [complete] (all backtrack tokens emitted)
 //   BACKTRACK_EMIT -> BACKTRACK_EMIT (output full, resume next call)
+//   EXACT_EMIT -> [complete] (all exact tokens emitted)
+//   EXACT_EMIT -> EXACT_EMIT (output full, resume next call)
 //   BYTE_LOOP -> FLUSH (all bytes processed)
 //   BYTE_LOOP -> BYTE_LOOP (output full mid-loop, resume next call)
 //   FLUSH -> [complete] (all window tokens emitted)
@@ -145,11 +150,9 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
       iree_tokenizer_bpe_output_cursor_make(out_tokens, out_offsets,
                                             segment_base_offset, max_tokens);
 
-  // Track segment state for finalize and offset clamping.
-  // Updated on each call since reclaim shifts the segment in the ring buffer.
-  if (is_partial) {
-    state->segment.base_offset = segment_base_offset;
-  }
+  // Track segment state for output retries, finalize, and offset clamping.
+  // Complete exact segments can also remain pending when the output fills.
+  state->segment.base_offset = segment_base_offset;
   state->segment.original_size = original_segment_size;
 
   // FAST_PATH_PENDING: Resume from previous call that matched whole segment
@@ -173,8 +176,8 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
 
   // SEGMENT_START: Beginning a new segment. Try fast-path first.
   if (state->phase == IREE_TOKENIZER_BPE_PHASE_SEGMENT_START) {
-    // Partial segments must use BYTE_LOOP regardless of size. Fast-path and
-    // backtracking assume complete segments and would emit non-frozen tokens.
+    // Partial segments must use BYTE_LOOP regardless of size. Fast-path,
+    // backtracking, and exact global merging all require a complete segment.
     if (is_partial) {
       state->window.count = 0;
       state->window.start = 0;
@@ -198,6 +201,12 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
       // would incorrectly find "hello</w>" when HuggingFace finds "hello".
       const bool ignore_merges = iree_all_bits_set(
           model->flags, IREE_TOKENIZER_BPE_FLAG_IGNORE_MERGES);
+      const bool byte_level_input = iree_all_bits_set(
+          model->flags, IREE_TOKENIZER_BPE_FLAG_BYTE_LEVEL_INPUT);
+      const bool can_exact =
+          iree_all_bits_set(model->flags,
+                            IREE_TOKENIZER_BPE_FLAG_EXACT_COMPLETE_SEGMENTS) &&
+          iree_tokenizer_bpe_exact_can_encode(model, segment);
       if (model->end_of_word_suffix_length > 0 && !ignore_merges) {
         iree_string_view_t suffix = iree_make_string_view(
             model->end_of_word_suffix, model->end_of_word_suffix_length);
@@ -240,8 +249,6 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
         iree_host_size_t match_length = 0;
         iree_host_size_t expected_length = segment.size;
         bool raw_whitespace_token = false;
-        const bool byte_level_input = iree_all_bits_set(
-            model->flags, IREE_TOKENIZER_BPE_FLAG_BYTE_LEVEL_INPUT);
 
         // For IGNORE_MERGES, always use bare segment lookup since HuggingFace
         // does longest-match without suffix. For normal mode with suffix,
@@ -252,7 +259,7 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
           iree_tokenizer_bpe_trie_longest_match_with_suffix(
               model, segment, suffix, &whole_segment_token_id, &match_length);
           expected_length = segment.size + suffix.size;
-        } else if (byte_level_input &&
+        } else if (byte_level_input && !can_exact &&
                    iree_tokenizer_bpe_segment_is_ascii_whitespace(segment)) {
           // Some Hugging Face tokenizer JSONs compose an explicit Split with
           // ByteLevel(use_regex=false) and carry literal whitespace tokens in
@@ -262,7 +269,7 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
               model, segment, &whole_segment_token_id, &match_length);
           raw_whitespace_token = whole_segment_token_id >= 0 &&
                                  match_length == expected_length;
-        } else if (byte_level_input &&
+        } else if (byte_level_input && !can_exact &&
                    iree_tokenizer_bpe_segment_contains_raw_control_whitespace(
                        model, segment)) {
           // Keep mixed punctuation/text + raw newline/tab segments out of the
@@ -296,13 +303,15 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
         }
       }
 
-      // Use backtracking for segments within threshold. This is the O(n)
-      // path and handles 99.9%+ of real segments (word-level from
-      // metaspace/whitespace/regex splitters are typically < 100 bytes).
-      const bool byte_level_input = iree_all_bits_set(
-          model->flags, IREE_TOKENIZER_BPE_FLAG_BYTE_LEVEL_INPUT);
-      if (!byte_level_input &&
-          segment.size <= model->max_backtrack_segment_bytes) {
+      // Canonical BPE rank dependencies can propagate arbitrarily far. Use one
+      // global heap only for the loader-verified safe ByteLevel shape; all
+      // other configurations retain their established legacy behavior.
+      if (can_exact) {
+        IREE_RETURN_IF_ERROR(
+            iree_tokenizer_bpe_exact_prepare(model, state, segment));
+        state->phase = IREE_TOKENIZER_BPE_PHASE_EXACT_EMIT;
+      } else if (!byte_level_input &&
+                 segment.size <= model->max_backtrack_segment_bytes) {
         iree_tokenizer_bpe_backtrack_encode(
             model, state, (const uint8_t*)segment.data, segment.size,
             model->end_of_word_suffix, model->end_of_word_suffix_length);
@@ -324,6 +333,22 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
         state->phase = IREE_TOKENIZER_BPE_PHASE_BYTE_LOOP;
       }
     }
+  }
+
+  // EXACT_EMIT: output the prepared globally merged ByteLevel segment. The
+  // dynamically sized scratch persists if the caller's output fills.
+  if (state->phase == IREE_TOKENIZER_BPE_PHASE_EXACT_EMIT) {
+    if (!iree_tokenizer_bpe_exact_emit(state, &cursor)) {
+      *out_token_count =
+          iree_tokenizer_bpe_output_cursor_count(&cursor, out_tokens);
+      return iree_ok_status();
+    }
+    iree_tokenizer_bpe_exact_reset(state);
+    state->phase = IREE_TOKENIZER_BPE_PHASE_SEGMENT_START;
+    *out_token_count =
+        iree_tokenizer_bpe_output_cursor_count(&cursor, out_tokens);
+    *out_segment_complete = true;
+    return iree_ok_status();
   }
 
   // BACKTRACK_EMIT: Emit tokens from the backtrack stack. Reached either
@@ -360,18 +385,17 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
     return iree_ok_status();
   }
 
-  // BYTE_LOOP: Process input bytes one at a time, building up the window.
-  // After adding each token, emit any tokens that are now "frozen"
-  // (can't be affected by future input, per the frozen token theorem).
+  // BYTE_LOOP: Legacy partial/non-ByteLevel path. Process input bytes one at a
+  // time and emit according to the bounded-window heuristic.
   //
   // Uses original segment (not effective_segment). The suffix is only used
   // for the fast-path whole-segment match. If that fails, we tokenize the
   // original segment without suffix.
   if (state->phase == IREE_TOKENIZER_BPE_PHASE_BYTE_LOOP) {
-    // On resumption after output exhaustion, drain frozen tokens that
+    // On resumption after output exhaustion, drain eligible window tokens that
     // couldn't be emitted in the previous call. Without this, each
     // resumption pushes a new token before draining, and with small output
-    // buffers the window accumulates undrained frozen tokens until overflow.
+    // buffers the window accumulates undrained tokens until overflow.
     if (state->segment.byte_position > 0 && state->window.count > 0) {
       if (!iree_tokenizer_bpe_emit_frozen_tokens(
               state, model, state->segment.byte_position - 1, &cursor)) {
@@ -450,8 +474,7 @@ static iree_status_t iree_tokenizer_bpe_encode_segment(
                                            state->window.count - 2);
       }
 
-      // Emit frozen tokens. The freeze check uses the last consumed byte
-      // position (token_end_byte - 1) as the current frontier.
+      // Apply the legacy window emission threshold at the consumed frontier.
       if (!iree_tokenizer_bpe_emit_frozen_tokens(state, model,
                                                  token_end_byte - 1, &cursor)) {
         // Output full. Save next unprocessed byte for resumption.
@@ -575,8 +598,12 @@ iree_status_t iree_tokenizer_bpe_state_encode(
     //
     // Guards: state machine must be ready for a new segment, the segment
     // must be complete (not partial), and no offset tracking (cache doesn't
-    // store per-token byte positions).
-    if (!is_partial &&
+    // store per-token byte positions). ByteLevel is deliberately excluded:
+    // exact segments never populate this cache, so no cached token sequence can
+    // bypass the global merge heap or carry a noncanonical legacy result.
+    if (!iree_all_bits_set(model->flags,
+                           IREE_TOKENIZER_BPE_FLAG_BYTE_LEVEL_INPUT) &&
+        !is_partial &&
         bpe_state->phase == IREE_TOKENIZER_BPE_PHASE_SEGMENT_START &&
         !current_offset_output && segment_text.size > 0) {
       iree_tokenizer_bpe_output_cursor_t cache_cursor =
@@ -626,6 +653,21 @@ iree_status_t iree_tokenizer_bpe_state_finalize(
     iree_host_size_t* out_token_count) {
   iree_tokenizer_bpe_state_t* bpe_state = (iree_tokenizer_bpe_state_t*)state;
   *out_token_count = 0;
+
+  if (bpe_state->phase == IREE_TOKENIZER_BPE_PHASE_EXACT_EMIT) {
+    iree_tokenizer_bpe_output_cursor_t cursor =
+        iree_tokenizer_bpe_output_cursor_make(
+            output.token_ids, output.token_offsets,
+            bpe_state->segment.base_offset, output.capacity);
+    bool complete = iree_tokenizer_bpe_exact_emit(bpe_state, &cursor);
+    *out_token_count =
+        iree_tokenizer_bpe_output_cursor_count(&cursor, output.token_ids);
+    if (complete) {
+      iree_tokenizer_bpe_exact_reset(bpe_state);
+      bpe_state->phase = IREE_TOKENIZER_BPE_PHASE_SEGMENT_START;
+    }
+    return iree_ok_status();
+  }
 
   // Flush remaining window tokens from two scenarios:
   //  - BYTE_LOOP: partial segment processing (streaming mode) never
@@ -685,21 +727,24 @@ bool iree_tokenizer_bpe_state_has_pending(
   //  - BYTE_LOOP: partial segment processing left unflushed window tokens.
   //  - FLUSH: output filled during final segment flush (window still has tokens
   //    to emit on subsequent finalize calls).
-  return (bpe_state->phase == IREE_TOKENIZER_BPE_PHASE_BYTE_LOOP ||
+  return (bpe_state->phase == IREE_TOKENIZER_BPE_PHASE_EXACT_EMIT &&
+          bpe_state->exact.emit_index !=
+              IREE_TOKENIZER_BPE_EXACT_INVALID_INDEX) ||
+         ((bpe_state->phase == IREE_TOKENIZER_BPE_PHASE_BYTE_LOOP ||
           bpe_state->phase == IREE_TOKENIZER_BPE_PHASE_FLUSH) &&
-         bpe_state->window.count > 0;
+          bpe_state->window.count > 0);
 }
 
 // Reclaims committed bytes from an active partial segment.
 //
 // When processing partial segments (last_is_partial=true), the BPE stays in
-// BYTE_LOOP and accumulates tokens in its window. Frozen tokens (those far
-// enough behind the processing frontier) have already been emitted. This method
+// BYTE_LOOP and accumulates tokens in its window. Tokens committed by its
+// bounded heuristic have already been emitted. This method
 // computes how many leading segment bytes are no longer needed, adjusts all
 // internal byte tracking, and returns the count for ring buffer advancement.
 //
 // Returns 0 if no bytes can be reclaimed (not processing a partial segment,
-// no frozen tokens emitted yet, or window front hasn't advanced past byte 0).
+// no tokens emitted yet, or window front hasn't advanced past byte 0).
 iree_host_size_t iree_tokenizer_bpe_state_reclaim(
     iree_tokenizer_model_state_t* state) {
   iree_tokenizer_bpe_state_t* bpe_state = (iree_tokenizer_bpe_state_t*)state;

@@ -74,6 +74,19 @@ iree_tokenizer_segment_output_empty(void) {
 // Segmenter Base Type
 //===----------------------------------------------------------------------===//
 
+typedef enum iree_tokenizer_segmenter_flag_bits_e {
+  IREE_TOKENIZER_SEGMENTER_FLAG_NONE = 0,
+  // A Sequence containing this child must probe intermediate children in
+  // order before using a later child to choose a safe streaming boundary.
+  IREE_TOKENIZER_SEGMENTER_FLAG_ORDERED_PARENT_PROBE = 1u << 0,
+  // Exact-pattern hints used only while recognizing the ordered DeepSeek V4
+  // number -> CJK -> main Split composition.
+  IREE_TOKENIZER_SEGMENTER_FLAG_DEEPSEEK_NUMBER_HINT = 1u << 1,
+  IREE_TOKENIZER_SEGMENTER_FLAG_DEEPSEEK_CJK_HINT = 1u << 2,
+  IREE_TOKENIZER_SEGMENTER_FLAG_DEEPSEEK_MAIN_HINT = 1u << 3,
+} iree_tokenizer_segmenter_flag_bits_t;
+typedef uint32_t iree_tokenizer_segmenter_flags_t;
+
 // Base segmenter structure. All concrete segmenter types embed this at
 // offset 0. The vtable provides type-specific operations; state_size is
 // cached at creation time for efficient state allocation.
@@ -81,6 +94,8 @@ struct iree_tokenizer_segmenter_t {
   const iree_tokenizer_segmenter_vtable_t* vtable;  // Must be at offset 0.
   // Size of state struct, cached at creation.
   iree_host_size_t state_size;
+  // Composition hints consumed by parent segmenters.
+  iree_tokenizer_segmenter_flags_t flags;
 };
 
 // Base streaming state structure. All concrete state types embed this at

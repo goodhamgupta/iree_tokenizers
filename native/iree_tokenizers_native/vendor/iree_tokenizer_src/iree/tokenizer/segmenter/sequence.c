@@ -8,6 +8,8 @@
 
 #include <string.h>
 
+#include "iree/base/internal/unicode.h"
+
 //===----------------------------------------------------------------------===//
 // Sequence Segmenter Implementation
 //===----------------------------------------------------------------------===//
@@ -17,6 +19,9 @@ typedef struct iree_tokenizer_segmenter_sequence_t {
   iree_tokenizer_segmenter_t base;
   iree_allocator_t allocator;
   iree_host_size_t child_count;
+  // Whether pass-through boundary probes must visit children in Sequence
+  // order instead of jumping directly to the final child.
+  bool ordered_parent_probe;
   // Children stored inline (MAX_DEPTH is small and fixed).
   iree_tokenizer_segmenter_t*
       children[IREE_TOKENIZER_SEGMENTER_SEQUENCE_MAX_DEPTH];
@@ -167,10 +172,14 @@ iree_status_t iree_tokenizer_segmenter_sequence_allocate(
 
   segmenter->allocator = allocator;
   segmenter->child_count = child_count;
+  segmenter->ordered_parent_probe = false;
 
   // Copy child pointers (sequence takes ownership).
   for (iree_host_size_t i = 0; i < child_count; ++i) {
     segmenter->children[i] = children[i];
+    segmenter->ordered_parent_probe |= iree_any_bit_set(
+        children[i]->flags,
+        IREE_TOKENIZER_SEGMENTER_FLAG_ORDERED_PARENT_PROBE);
   }
 
   // Calculate state size and populate child state offsets.
@@ -280,6 +289,21 @@ static iree_status_t iree_tokenizer_segmenter_sequence_reinit_child_state(
       segmenter->children[child_index],
       (uint8_t*)state + segmenter->child_state_offsets[child_index],
       &child_state);
+}
+
+// Returns true when the final codepoint in |segment| is whitespace. Probe
+// segments are guaranteed to end at complete UTF-8 boundaries.
+static bool iree_tokenizer_segmenter_sequence_segment_ends_in_whitespace(
+    iree_string_view_t input, iree_tokenizer_segment_t segment) {
+  if (segment.start >= segment.end || segment.end > input.size) return false;
+  iree_string_view_t segment_text = iree_make_string_view(
+      input.data + segment.start, segment.end - segment.start);
+  iree_host_size_t position = 0;
+  uint32_t last_codepoint = 0;
+  while (position < segment_text.size) {
+    last_codepoint = iree_unicode_utf8_decode(segment_text, &position);
+  }
+  return iree_unicode_is_whitespace(last_codepoint);
 }
 
 // Configures a level with a new parent segment to process.
@@ -537,52 +561,90 @@ static iree_status_t iree_tokenizer_segmenter_sequence_state_process(
         // from returning consumed=0 when child[0] genuinely has nothing to
         // match.
         //
-        // Before entering pass-through, probe the final child to verify the
-        // pipeline can make progress on this text. If the final child (the most
-        // general pattern matcher, e.g., MainRegex) also returns consumed=0
-        // with no pending state, the text is too small or incomplete for any
-        // child to process. Return consumed=0 to let the caller provide more
-        // data or call finalize(). Without this probe, the pipeline's internal
-        // finalize path would force partial text through (e.g., splitting a
-        // partial UTF-8 sequence into separate segments).
-        // Probe the final child (the most general pattern matcher, e.g.,
-        // MainRegex) to find the total bytes it can consume. We call
-        // process() in a loop, discarding its output segments, to accumulate
-        // the total consumable byte count. The final child's DFA stops at
-        // natural word/match boundaries, so the pass-through segment will end
-        // cleanly without splitting words at arbitrary buffer boundaries.
+        // Before entering pass-through, probe a downstream child to verify the
+        // pipeline can make progress on this text. Most sequences can jump to
+        // the final, most-general matcher. Some ordered Split pipelines must
+        // first honor an intermediate child's boundary: otherwise a final GPT
+        // split can shorten whitespace before a CJK boundary that the previous
+        // child would have isolated with the full whitespace run intact.
+        //
+        // Probe each required child in Sequence order until one identifies a
+        // consumable prefix. We call process() in a loop, discarding its output
+        // segments, to accumulate that prefix. If no child can consume bytes,
+        // the text is too small or incomplete and the caller must provide more
+        // data or call finalize().
         //
         // This loop is critical for avoiding O(N^2) behavior: without it,
         // each pass-through would consume only one word (~25 bytes), and the
         // outer loop would reinitialize + rescan child[0] over the full
         // remaining buffer on every iteration.
         iree_host_size_t final_child_index = segmenter->child_count - 1;
-        IREE_RETURN_IF_ERROR(
-            iree_tokenizer_segmenter_sequence_reinit_child_state(
-                state, segmenter, final_child_index));
-        iree_tokenizer_segmenter_state_t* final_child_state =
-            iree_tokenizer_segmenter_sequence_get_child_state(
-                state, segmenter, final_child_index);
+        iree_host_size_t first_probe_child =
+            segmenter->ordered_parent_probe ? 1 : final_child_index;
         iree_host_size_t total_probe_consumed = 0;
-        {
+        bool probe_blocked_on_pending_child = false;
+        for (iree_host_size_t probe_child_index = first_probe_child;
+             probe_child_index <= final_child_index &&
+             total_probe_consumed == 0 && !probe_blocked_on_pending_child;
+             ++probe_child_index) {
+          IREE_RETURN_IF_ERROR(
+              iree_tokenizer_segmenter_sequence_reinit_child_state(
+                  state, segmenter, probe_child_index));
+          iree_tokenizer_segmenter_state_t* probe_child_state =
+              iree_tokenizer_segmenter_sequence_get_child_state(
+                  state, segmenter, probe_child_index);
           iree_tokenizer_segment_t probe_segments[64];
           iree_string_view_t probe_remaining = remaining;
+          iree_host_size_t first_probe_segment_end = 0;
+          iree_host_size_t last_non_whitespace_segment_end = 0;
           while (probe_remaining.size > 0) {
             iree_host_size_t probe_consumed = 0;
             iree_host_size_t probe_count = 0;
             IREE_RETURN_IF_ERROR(iree_tokenizer_segmenter_state_process(
-                final_child_state, probe_remaining,
+                probe_child_state, probe_remaining,
                 iree_tokenizer_make_segment_output(probe_segments, 64),
                 &probe_consumed, &probe_count));
-            if (probe_consumed == 0) break;
+            iree_host_size_t probe_iteration_base = total_probe_consumed;
+            for (iree_host_size_t i = 0; i < probe_count; ++i) {
+              iree_host_size_t segment_end =
+                  probe_iteration_base + probe_segments[i].end;
+              if (first_probe_segment_end == 0) {
+                first_probe_segment_end = segment_end;
+              }
+              if (!iree_tokenizer_segmenter_sequence_segment_ends_in_whitespace(
+                      probe_remaining, probe_segments[i])) {
+                last_non_whitespace_segment_end = segment_end;
+              }
+            }
+            if (probe_consumed == 0) {
+              // An intermediate child may have found a match that needs more
+              // input or finalization (for example, a CJK run at the visible
+              // boundary). Do not let a later child cut a prefix through that
+              // pending boundary.
+              probe_blocked_on_pending_child =
+                  probe_child_index < final_child_index &&
+                  iree_tokenizer_segmenter_state_has_pending(
+                      probe_child_state);
+              break;
+            }
             total_probe_consumed += probe_consumed;
             probe_remaining.data += probe_consumed;
             probe_remaining.size -= probe_consumed;
           }
+          if (segmenter->ordered_parent_probe &&
+              probe_child_index == final_child_index &&
+              first_probe_segment_end > 0) {
+            // Re-running the final child on one parent slice can reinterpret
+            // an ambiguous trailing whitespace suffix as end-of-stream. Keep
+            // the largest prefix ending in non-whitespace; if the probe only
+            // produced whitespace, keep exactly its first segment boundary.
+            total_probe_consumed = last_non_whitespace_segment_end > 0
+                                       ? last_non_whitespace_segment_end
+                                       : first_probe_segment_end;
+          }
         }
         if (total_probe_consumed == 0) {
-          // Final child can't consume any bytes either. The text is too small
-          // or incomplete for any child to process — return consumed=0 to let
+          // No downstream child can consume bytes. Return consumed=0 to let
           // the caller provide more data or call finalize().
           total_consumed += consumed;
           break;
