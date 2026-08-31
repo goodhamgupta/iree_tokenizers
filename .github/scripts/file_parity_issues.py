@@ -5,7 +5,7 @@
 # ///
 """
 Reads bench/results/parity_report.json (and the trending model list) and
-opens / refreshes a GitHub issue per failing model.
+opens, refreshes, resolves, or reopens a GitHub issue per monitored model.
 
 Invoked from the parity-monitor workflow. Uses the preinstalled `gh` CLI for
 all GitHub API operations so no extra Python deps are required — `GH_TOKEN`
@@ -35,6 +35,9 @@ from pathlib import Path
 HASH_MARKER_PREFIX = "<!-- parity-content-hash: "
 HASH_MARKER_SUFFIX = " -->"
 HASH_MARKER_RE = re.compile(r"<!--\s*parity-content-hash:\s*([0-9a-f]+)\s*-->")
+ACCESS_DENIED_RE = re.compile(
+    r"\b(?:permission|access)[\s_-]*denied\b", re.IGNORECASE
+)
 
 # Title of the single tracking issue filed when the parity matrix crashes
 # before producing a report. Kept stable so repeated crashes dedupe onto one
@@ -81,28 +84,29 @@ def main() -> int:
 
     ensure_label(repo, label)
 
-    failures = [m for m in report.get("models", []) if is_failure(m)]
-    print(f"Found {len(failures)} failing models out of {len(report.get('models', []))}.")
+    models = report.get("models", [])
+    failures = [
+        model
+        for model in models
+        if is_actionable_failure(
+            model, trending_by_label.get(model.get("label", ""))
+        )
+    ]
+    print(f"Found {len(failures)} failing models out of {len(models)}.")
 
     summary_lines: list[str] = []
 
-    for model in failures:
-        repo_meta = trending_by_label.get(model["label"])
-        known_bug = is_known_upstream_bug(model["label"], upstream)
-        title = f"parity: {model['label']}"
-        body = render_issue_body(
-            model=model, repo_meta=repo_meta, known_bug=known_bug, run_url=run_url
+    for model in models:
+        summary = process_model_result(
+            repo=repo,
+            model=model,
+            repo_meta=trending_by_label.get(model["label"]),
+            upstream=upstream,
+            label=label,
+            run_url=run_url,
         )
-        summary_lines.append(
-            publish_deduped_issue(
-                repo,
-                title,
-                body,
-                label,
-                tag=model["label"],
-                create_skip_reason="known upstream bug" if known_bug else None,
-            )
-        )
+        if summary is not None:
+            summary_lines.append(summary)
 
     write_step_summary(summary_lines)
     return 0
@@ -175,11 +179,15 @@ def publish_deduped_issue(
     *,
     tag: str,
     create_skip_reason: str | None = None,
+    reopen_closed: bool = False,
 ) -> str:
     """Files or refreshes a parity-monitor issue, deduplicating across runs.
 
     - If an issue with this title and label already exists, comment only when
-      the content hash has changed; otherwise leave it untouched.
+      the content hash has changed; otherwise leave it untouched. When
+      ``reopen_closed`` is true, a closed issue is reopened before applying
+      content-hash deduplication so a recurring model failure becomes visible
+      even when its failure details are unchanged.
     - If no issue exists and ``create_skip_reason`` is provided, skip creation
       and return a ``skipped`` summary (used to honor the known-upstream-bug
       list without suppressing follow-up comments on an already-open issue).
@@ -198,13 +206,22 @@ def publish_deduped_issue(
         state = existing["state"].lower()
         number = existing["number"]
         print(f"  exists: #{number} for {tag} (state={state})")
+        reopened = False
+        if state == "closed" and reopen_closed:
+            reopen_issue(repo, number)
+            state = "open"
+            reopened = True
         if latest_content_hash(repo, number) == content_hash:
             print(
                 f"    skip comment on #{number}: content unchanged "
                 f"(hash={content_hash[:12]})"
             )
+            if reopened:
+                return f"reopened #{number} ({tag})"
             return f"unchanged {state} #{number} ({tag})"
         comment_on_issue(repo, number, body_with_marker)
+        if reopened:
+            return f"reopened and commented on #{number} ({tag})"
         return f"commented on {state} #{number} ({tag})"
 
     if create_skip_reason is not None:
@@ -222,6 +239,100 @@ def is_failure(model: dict) -> bool:
     if model.get("status") == "load_error":
         return True
     return model.get("all_ok") is False
+
+
+def is_passing(model: dict) -> bool:
+    return model.get("status") == "ok" and model.get("all_ok") is True
+
+
+def is_non_actionable_gated_access_error(
+    model: dict, repo_meta: dict | None
+) -> bool:
+    """Whether a load error only says the monitor lacks gated-repo access."""
+    if model.get("status") != "load_error" or not (repo_meta or {}).get("gated"):
+        return False
+    return bool(ACCESS_DENIED_RE.search(str(model.get("reason") or "")))
+
+
+def is_actionable_failure(model: dict, repo_meta: dict | None) -> bool:
+    return is_failure(model) and not is_non_actionable_gated_access_error(
+        model, repo_meta
+    )
+
+
+def process_model_result(
+    *,
+    repo: str,
+    model: dict,
+    repo_meta: dict | None,
+    upstream: str,
+    label: str,
+    run_url: str,
+) -> str | None:
+    """Apply the issue lifecycle transition for one completed model result."""
+    tag = model["label"]
+    title = f"parity: {tag}"
+
+    if model.get("status") == "skipped":
+        print(f"  {tag}: skipped by parity matrix; leaving issue state unchanged")
+        return None
+
+    if is_non_actionable_gated_access_error(model, repo_meta):
+        comment = render_access_resolution_comment(model=model, run_url=run_url)
+        return close_matching_open_issue(
+            repo, title, label, comment, tag=tag, resolution="monitor access error"
+        )
+
+    if is_passing(model):
+        comment = render_passing_resolution_comment(model=model, run_url=run_url)
+        return close_matching_open_issue(
+            repo, title, label, comment, tag=tag, resolution="parity restored"
+        )
+
+    if not is_failure(model):
+        print(f"  {tag}: incomplete result; leaving issue state unchanged")
+        return None
+
+    known_bug = is_known_upstream_bug(tag, upstream)
+    body = render_issue_body(
+        model=model, repo_meta=repo_meta, known_bug=known_bug, run_url=run_url
+    )
+    return publish_deduped_issue(
+        repo,
+        title,
+        body,
+        label,
+        tag=tag,
+        create_skip_reason="known upstream bug" if known_bug else None,
+        reopen_closed=True,
+    )
+
+
+def close_matching_open_issue(
+    repo: str,
+    title: str,
+    label: str,
+    comment: str,
+    *,
+    tag: str,
+    resolution: str,
+) -> str | None:
+    """Comment on and close the matching open tracker issue as completed."""
+    existing = find_existing_issue(repo, title, label)
+    if not existing:
+        print(f"  {tag}: no matching issue to close")
+        return None
+
+    state = existing["state"].lower()
+    number = existing["number"]
+    if state != "open":
+        print(f"  {tag}: matching issue #{number} is already {state}")
+        return None
+
+    comment_on_issue(repo, number, comment)
+    close_issue_as_completed(repo, number)
+    print(f"  closed #{number} for {tag}: {resolution}")
+    return f"closed #{number} ({tag}: {resolution})"
 
 
 def run_gh(args: list[str], *, input: str | None = None) -> subprocess.CompletedProcess:
@@ -337,6 +448,25 @@ def comment_on_issue(repo: str, number: int, body: str) -> None:
     )
 
 
+def reopen_issue(repo: str, number: int) -> None:
+    run_gh(["gh", "issue", "reopen", str(number), "--repo", repo])
+
+
+def close_issue_as_completed(repo: str, number: int) -> None:
+    run_gh(
+        [
+            "gh",
+            "issue",
+            "close",
+            str(number),
+            "--repo",
+            repo,
+            "--reason",
+            "completed",
+        ]
+    )
+
+
 def create_issue(repo: str, title: str, body: str, labels: list[str]) -> int:
     result = run_gh(
         [
@@ -364,6 +494,60 @@ def is_known_upstream_bug(label: str, upstream_md: str) -> bool:
         return False
     pattern = re.compile(rf"`{re.escape(label)}`")
     return bool(pattern.search(upstream_md))
+
+
+def render_passing_resolution_comment(*, model: dict, run_url: str) -> str:
+    """Render report evidence explaining why a parity issue is complete."""
+    lines = [
+        "Automated resolution from `parity-monitor`.",
+        "",
+        f"- Workflow run: {run_url}",
+        f"- Model: `{model['label']}`",
+        "- Report status: `ok`",
+        "- All parity checks passed: yes (`all_ok=true`)",
+    ]
+
+    if model.get("passed") is not None and model.get("total") is not None:
+        lines.append(f"- Cases passed: {model['passed']}/{model['total']}")
+
+    batch = model.get("batch") or {}
+    if batch.get("status") == "ok" and not batch.get("mismatches"):
+        lines.append("- Batch encode: ok")
+
+    stream = model.get("stream") or {}
+    if stream.get("status") == "ok" and stream.get("ids_equal") is True:
+        lines.append("- Stream encode: ok")
+
+    lines += [
+        "",
+        "The current completed report no longer reproduces this parity failure, "
+        "so the tracker is closing the issue as completed. A later regression "
+        "will reopen it automatically.",
+    ]
+    return "\n".join(lines)
+
+
+def render_access_resolution_comment(*, model: dict, run_url: str) -> str:
+    """Render evidence that a gated-repo load error is not a parity failure."""
+    reason = str(model.get("reason") or "(no reason)")
+    return "\n".join(
+        [
+            "Automated resolution from `parity-monitor`.",
+            "",
+            f"- Workflow run: {run_url}",
+            f"- Model: `{model['label']}`",
+            "- Report status: `load_error` for a gated repository",
+            "",
+            "```",
+            reason,
+            "```",
+            "",
+            "This permission/access-denied result means the monitor credentials "
+            "cannot read the gated tokenizer. It is not evidence of a tokenizer "
+            "parity regression, so the tracker is closing this false-positive "
+            "issue as completed.",
+        ]
+    )
 
 
 def render_issue_body(
