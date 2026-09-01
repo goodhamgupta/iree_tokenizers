@@ -401,6 +401,39 @@ static iree_status_t iree_tokenizer_regex_nfa_accept_state_allocate(
   return iree_ok_status();
 }
 
+// Returns true when an AST branch contains `$`. Mixed anchored/unanchored
+// alternations need distinct accept states so the DFA can retain branch
+// identity until the end-anchor assertion is resolved.
+static bool iree_tokenizer_regex_ast_contains_end_anchor(
+    const iree_tokenizer_regex_ast_node_t* node) {
+  if (!node) return false;
+
+  switch (node->type) {
+    case IREE_TOKENIZER_UTIL_REGEX_AST_ANCHOR_END:
+      return true;
+    case IREE_TOKENIZER_UTIL_REGEX_AST_CONCAT:
+    case IREE_TOKENIZER_UTIL_REGEX_AST_ALTERNATION:
+      for (iree_host_size_t i = 0; i < node->data.compound.child_count; ++i) {
+        if (iree_tokenizer_regex_ast_contains_end_anchor(
+                node->data.compound.children[i])) {
+          return true;
+        }
+      }
+      return false;
+    case IREE_TOKENIZER_UTIL_REGEX_AST_QUANTIFIER:
+      return iree_tokenizer_regex_ast_contains_end_anchor(
+          node->data.quantifier.child);
+    case IREE_TOKENIZER_UTIL_REGEX_AST_GROUP:
+      return iree_tokenizer_regex_ast_contains_end_anchor(
+          node->data.group_child);
+    case IREE_TOKENIZER_UTIL_REGEX_AST_NEG_LOOKAHEAD:
+      return iree_tokenizer_regex_ast_contains_end_anchor(
+          node->data.lookahead_child);
+    default:
+      return false;
+  }
+}
+
 // Builds fragment for alternation.
 // Handles mixed lookahead requirements by creating separate accept states.
 static iree_status_t iree_tokenizer_regex_nfa_build_alternation(
@@ -438,6 +471,8 @@ static iree_status_t iree_tokenizer_regex_nfa_build_alternation(
 
   bool has_lookahead_branch = false;
   bool has_non_lookahead_branch = false;
+  bool has_end_anchor_branch = false;
+  bool has_non_end_anchor_branch = false;
   bool has_conflicting_lookaheads = false;
   iree_tokenizer_regex_lookahead_type_t first_lookahead_type =
       IREE_TOKENIZER_UTIL_REGEX_LOOKAHEAD_NONE;
@@ -466,6 +501,13 @@ static iree_status_t iree_tokenizer_regex_nfa_build_alternation(
     } else {
       has_non_lookahead_branch = true;
     }
+
+    if (iree_tokenizer_regex_ast_contains_end_anchor(
+            node->data.compound.children[i])) {
+      has_end_anchor_branch = true;
+    } else {
+      has_non_end_anchor_branch = true;
+    }
   }
 
   // Create split state.
@@ -478,11 +520,13 @@ static iree_status_t iree_tokenizer_regex_nfa_build_alternation(
   // Check if we need separate accept states:
   // - Mixed lookahead/no-lookahead branches (for PCRE-compatible matching)
   // - All-lookahead but with different constraints (conflicting)
+  // - Mixed end-anchored/non-anchored branches (anchor assertion is deferred)
   // In either case, we create per-branch accept states so DFA extraction
   // can compute min branch indices for PCRE-compatible match selection.
   bool needs_separate_accepts =
       (has_lookahead_branch && has_non_lookahead_branch) ||
-      has_conflicting_lookaheads;
+      has_conflicting_lookaheads ||
+      (has_end_anchor_branch && has_non_end_anchor_branch);
 
   if (needs_separate_accepts) {
     // Create SEPARATE accept states for each branch to preserve branch index.

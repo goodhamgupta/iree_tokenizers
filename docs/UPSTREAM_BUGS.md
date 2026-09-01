@@ -21,6 +21,42 @@ Update on this branch:
   - long T5 tokenizer.json Metaspace finalize overflow on repeated inputs
   - Gemma-style Metaspace + ByteFallback BPE stream chunk-boundary divergence via buffered finalize fallback
 - Remaining unresolved here:
+  - **Mixed start-anchored and unanchored regex alternatives are not yet
+    branch-local.** The native executor currently derives one start-anchor
+    constraint for the complete DFA, so a pattern such as `^x$|x\n` cannot
+    take its unanchored branch after byte zero (the reverse branch order has
+    the same limitation). The end-anchor work in v0.8.13 preserves `$`
+    alternation priority and chunk seams, but it does not claim support for
+    mixing `^` and unanchored top-level alternatives. Such patterns must be
+    expressed as separate pipeline stages until start-anchor requirements are
+    tracked per branch.
+  - **Offsets after length-changing regex normalizers remain transform-buffer
+    offsets.** The encoder now matches Hugging Face/Oniguruma token IDs and
+    decoded text for end-anchored replacements such as WeMM's
+    `Replace(Regex("\\n$"), "")`, but the vendored runtime does not retain the
+    full normalized-to-original alignment map. For `"x\n\nx"`, both encoders
+    now emit `x`, `Ċ`, `x`; IREE reports the surviving newline at `{1, 2}` in
+    the normalized buffer while Hugging Face reports its source span `{2, 3}`.
+    A deletion-only byte remap is not safe for WeMM's real
+    `Sequence[Replace, NFC]`: decomposed input such as `"e\u0301\n\nx"` both
+    composes `e + U+0301` and removes a newline. Special tokens make decoded
+    output an unsafe alignment oracle too: a raw `<|endoftext|>` bypasses that
+    normalizer, while the post-processor-appended `<embedding>` has offset
+    `{0, 0}`. Therefore this branch does not claim offset parity when a
+    normalizer changes byte length; implementing it requires alignment
+    tracking through the native normalizer pipeline.
+  - **GLM-5.3/PhoneLLM Split+ByteLevel offsets differ from Hugging Face.** IDs,
+    token strings, decoded text, batch, and buffered stream parity are fixed
+    for the reported GPT whitespace branches, but with `track_offsets: true`
+    IREE reports source byte spans while Hugging Face reports zero-width spans
+    for these tokenizers (for example, `"hello"` is `{0, 5}` versus `{0, 0}`).
+    This predates the whitespace-regex sanitizer and also occurs on inputs that
+    do not exercise the rewritten branch. The shared shape is
+    `Sequence[Split, ByteLevel(trim_offsets=true)]` followed by a ByteLevel
+    post-processor whose `add_prefix_space` setting differs. This branch does
+    not claim offset parity for that configuration; reproducing the reference
+    alignment requires pipeline-level tracking rather than a model-name or
+    whitespace-only rewrite.
   - **`Split { MergedWithNext }` segfault in the vendored segmenter when chained inside a `Sequence` pre_tokenizer** (surfaced while finishing issue #9 — Laguna-XS.2 loads after the regex+unk fixes, but `encode/3` on inputs containing newlines between letters, e.g. `"x\ny"`, crashes with SIGSEGV in the C segmenter). Bisected to `iree/tokenizer/segmenter/split.c` MergedWithNext path; reproduces with `[\r\n]+` and `MergedWithNext` regardless of the regex form, so it is not the lookahead rewrite. Changing the behavior to `Isolated` makes the segfault go away, but at the cost of HF token-id parity. Tracked separately because the vendored C is out of scope for in-package patches; for now Laguna-XS.2 can load but cannot encode multi-line inputs.
   - **None on the BPE long-context parity axis.** End-to-end LongBench-v2
     byte-equality vs HF AutoTokenizer is now **119/119** across all 14

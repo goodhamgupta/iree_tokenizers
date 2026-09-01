@@ -100,6 +100,342 @@ defmodule IREETokenizers.CompatibilityTest do
     assert Encoding.get_tokens(iree_encoding) == ["Ġ", "ðŁĳ©"]
   end
 
+  test "direct ByteLevel regex preserves lookahead whitespace branch priority" do
+    fixture = fixture_path("bpe_bytelevel_gpt_whitespace.json")
+    {:ok, iree_tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, hf_tokenizer} = HFTokenizer.from_file(fixture)
+
+    cases = [
+      {"  a", [0, 2], ["Ġ", "Ġa"], [{0, 1}, {1, 3}]},
+      {"    return", [4, 16], ["ĠĠĠ", "Ġreturn"], [{0, 3}, {3, 10}]},
+      {"\n\n-", [19, 19, 21], ["Ċ", "Ċ", "-"], [{0, 1}, {1, 2}, {2, 3}]},
+      {"\t\ta", [17, 17, 1], ["ĉ", "ĉ", "a"], [{0, 1}, {1, 2}, {2, 3}]},
+      {"a  ", [1, 3], ["a", "ĠĠ"], [{0, 1}, {1, 3}]}
+    ]
+
+    for add_special_tokens <- [true, false] do
+      for {input, expected_ids, expected_tokens, expected_offsets} <- cases do
+        {:ok, iree_encoding} =
+          Tokenizer.encode(iree_tokenizer, input,
+            add_special_tokens: add_special_tokens,
+            track_offsets: true
+          )
+
+        {:ok, hf_encoding} =
+          HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: add_special_tokens)
+
+        assert Encoding.get_ids(iree_encoding) == expected_ids
+        assert Encoding.get_tokens(iree_encoding) == expected_tokens
+        assert Encoding.get_offsets(iree_encoding) == expected_offsets
+        assert Encoding.get_ids(iree_encoding) == HFEncoding.get_ids(hf_encoding)
+        assert Encoding.get_tokens(iree_encoding) == HFEncoding.get_tokens(hf_encoding)
+        assert Encoding.get_offsets(iree_encoding) == HFEncoding.get_offsets(hf_encoding)
+
+        assert {:ok, iree_decoded} =
+                 Tokenizer.decode(iree_tokenizer, expected_ids, skip_special_tokens: false)
+
+        assert {:ok, hf_decoded} =
+                 HFTokenizer.decode(hf_tokenizer, expected_ids, skip_special_tokens: false)
+
+        assert iree_decoded == input
+        assert hf_decoded == input
+
+        {:ok, stream} =
+          EncodeStream.new(iree_tokenizer,
+            add_special_tokens: add_special_tokens,
+            max_chunk_bytes: 1
+          )
+
+        streamed_prefix =
+          for <<byte <- input>>, reduce: [] do
+            ids ->
+              {:ok, chunk_ids} = EncodeStream.feed(stream, <<byte>>)
+              ids ++ chunk_ids
+          end
+
+        assert {:ok, streamed_suffix} = EncodeStream.finalize(stream)
+        assert streamed_prefix ++ streamed_suffix == expected_ids
+      end
+
+      inputs = Enum.map(cases, &elem(&1, 0))
+
+      {:ok, iree_batch} =
+        Tokenizer.encode_batch(iree_tokenizer, inputs,
+          add_special_tokens: add_special_tokens,
+          track_offsets: true
+        )
+
+      {:ok, hf_batch} =
+        HFTokenizer.encode_batch(hf_tokenizer, inputs, add_special_tokens: add_special_tokens)
+
+      for {{iree_encoding, hf_encoding}, {_input, ids, tokens, offsets}} <-
+            Enum.zip(Enum.zip(iree_batch, hf_batch), cases) do
+        assert Encoding.get_ids(iree_encoding) == ids
+        assert Encoding.get_tokens(iree_encoding) == tokens
+        assert Encoding.get_offsets(iree_encoding) == offsets
+        assert Encoding.get_ids(iree_encoding) == HFEncoding.get_ids(hf_encoding)
+        assert Encoding.get_tokens(iree_encoding) == HFEncoding.get_tokens(hf_encoding)
+        assert Encoding.get_offsets(iree_encoding) == HFEncoding.get_offsets(hf_encoding)
+      end
+    end
+  end
+
+  test "regex Replace end anchor follows Oniguruma line-end semantics" do
+    fixture = fixture_path("bpe_regex_end_anchor_normalizer.json")
+    {:ok, iree_tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, hf_tokenizer} = HFTokenizer.from_file(fixture)
+
+    cases = [
+      {"interior LF run", "x\n\nx", [0, 3, 0], ["x", "Ċ", "x"], nil, "x\nx"},
+      {"EOF LF", "x\n", [0], ["x"], [{0, 1}], "x"},
+      {"non-LF continuation", "x\nx", [0, 3, 0], ["x", "Ċ", "x"], [{0, 1}, {1, 2}, {2, 3}],
+       "x\nx"},
+      {"interior CRLF", "x\r\n\r\ny", [0, 2, 3, 2, 3, 1], ["x", "č", "Ċ", "č", "Ċ", "y"],
+       [{0, 1}, {1, 2}, {2, 3}, {3, 4}, {4, 5}, {5, 6}], "x\r\n\r\ny"},
+      {"EOF CRLF", "x\r\n", [0, 2], ["x", "č"], [{0, 1}, {1, 2}], "x\r"}
+    ]
+
+    for add_special_tokens <- [true, false] do
+      for {_name, input, base_ids, base_tokens, base_offsets, normalized} <- cases do
+        expected_ids = if add_special_tokens, do: base_ids ++ [5], else: base_ids
+
+        expected_tokens =
+          if add_special_tokens, do: base_tokens ++ ["<embedding>"], else: base_tokens
+
+        {:ok, iree_encoding} =
+          Tokenizer.encode(iree_tokenizer, input,
+            add_special_tokens: add_special_tokens,
+            track_offsets: true
+          )
+
+        {:ok, hf_encoding} =
+          HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: add_special_tokens)
+
+        assert Encoding.get_ids(iree_encoding) == expected_ids
+        assert Encoding.get_tokens(iree_encoding) == expected_tokens
+        assert Encoding.get_type_ids(iree_encoding) == List.duplicate(0, length(expected_ids))
+        assert length(Encoding.get_offsets(iree_encoding)) == length(expected_ids)
+        assert length(HFEncoding.get_offsets(hf_encoding)) == length(expected_ids)
+        assert Encoding.get_ids(iree_encoding) == HFEncoding.get_ids(hf_encoding)
+        assert Encoding.get_tokens(iree_encoding) == HFEncoding.get_tokens(hf_encoding)
+        assert Encoding.get_type_ids(iree_encoding) == HFEncoding.get_type_ids(hf_encoding)
+
+        if base_offsets do
+          expected_offsets =
+            if add_special_tokens, do: base_offsets ++ [{0, 0}], else: base_offsets
+
+          assert Encoding.get_offsets(iree_encoding) == expected_offsets
+          assert Encoding.get_offsets(iree_encoding) == HFEncoding.get_offsets(hf_encoding)
+        end
+
+        assert {:ok, iree_decoded_keep} =
+                 Tokenizer.decode(iree_tokenizer, expected_ids, skip_special_tokens: false)
+
+        assert {:ok, hf_decoded_keep} =
+                 HFTokenizer.decode(hf_tokenizer, expected_ids, skip_special_tokens: false)
+
+        expected_keep = if add_special_tokens, do: normalized <> "<embedding>", else: normalized
+        assert iree_decoded_keep == expected_keep
+        assert hf_decoded_keep == expected_keep
+
+        assert {:ok, iree_decoded_skip} =
+                 Tokenizer.decode(iree_tokenizer, expected_ids, skip_special_tokens: true)
+
+        assert {:ok, hf_decoded_skip} =
+                 HFTokenizer.decode(hf_tokenizer, expected_ids, skip_special_tokens: true)
+
+        assert iree_decoded_skip == normalized
+        assert hf_decoded_skip == normalized
+      end
+
+      inputs = Enum.map(cases, &elem(&1, 1))
+
+      {:ok, iree_batch} =
+        Tokenizer.encode_batch(iree_tokenizer, inputs,
+          add_special_tokens: add_special_tokens,
+          track_offsets: true
+        )
+
+      {:ok, hf_batch} =
+        HFTokenizer.encode_batch(hf_tokenizer, inputs, add_special_tokens: add_special_tokens)
+
+      for {{iree_encoding, hf_encoding}, {_name, _input, _ids, _tokens, offsets, _decoded}} <-
+            Enum.zip(Enum.zip(iree_batch, hf_batch), cases) do
+        assert Encoding.get_ids(iree_encoding) == HFEncoding.get_ids(hf_encoding)
+        assert Encoding.get_tokens(iree_encoding) == HFEncoding.get_tokens(hf_encoding)
+        assert Encoding.get_type_ids(iree_encoding) == HFEncoding.get_type_ids(hf_encoding)
+        assert length(Encoding.get_offsets(iree_encoding)) == length(iree_encoding.ids)
+
+        if offsets do
+          assert Encoding.get_offsets(iree_encoding) == HFEncoding.get_offsets(hf_encoding)
+        end
+      end
+
+      stream_chunks = [
+        ["x", "\n", "\n", "x"],
+        ["x\n", "\nx"],
+        ["x\n\n", "x"]
+      ]
+
+      {:ok, one_shot} =
+        Tokenizer.encode(iree_tokenizer, "x\n\nx", add_special_tokens: add_special_tokens)
+
+      for chunks <- stream_chunks do
+        {:ok, stream} =
+          EncodeStream.new(iree_tokenizer,
+            add_special_tokens: add_special_tokens,
+            max_chunk_bytes: 1
+          )
+
+        prefix_ids =
+          Enum.flat_map(chunks, fn chunk ->
+            {:ok, ids} = EncodeStream.feed(stream, chunk)
+            ids
+          end)
+
+        assert {:ok, suffix_ids} = EncodeStream.finalize(stream)
+        assert prefix_ids ++ suffix_ids == Encoding.get_ids(one_shot)
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.finalize(stream)
+      end
+    end
+  end
+
+  test "regex end-anchor changes preserve start-anchor behavior" do
+    fixture = fixture_path("bpe_regex_end_anchor_normalizer.json")
+
+    json =
+      fixture
+      |> File.read!()
+      |> Jason.decode!()
+      |> put_in(["normalizer", "pattern", "Regex"], "^x")
+      |> Jason.encode!()
+
+    {:ok, iree_tokenizer} = Tokenizer.from_buffer(json)
+    {:ok, hf_tokenizer} = HFTokenizer.from_buffer(json)
+
+    for input <- ["xxx", "yxx"] do
+      {:ok, iree_encoding} =
+        Tokenizer.encode(iree_tokenizer, input, add_special_tokens: false)
+
+      {:ok, hf_encoding} =
+        HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: false)
+
+      assert Encoding.get_ids(iree_encoding) == HFEncoding.get_ids(hf_encoding)
+      assert Encoding.get_tokens(iree_encoding) == HFEncoding.get_tokens(hf_encoding)
+
+      assert {:ok, iree_decoded} =
+               Tokenizer.decode(iree_tokenizer, Encoding.get_ids(iree_encoding),
+                 skip_special_tokens: false
+               )
+
+      assert {:ok, hf_decoded} =
+               HFTokenizer.decode(hf_tokenizer, HFEncoding.get_ids(hf_encoding),
+                 skip_special_tokens: false
+               )
+
+      assert iree_decoded == hf_decoded
+    end
+  end
+
+  test "deferred end anchor preserves alternation priority across chunks" do
+    fixture = fixture_path("bpe_regex_end_anchor_normalizer.json")
+    base = fixture |> File.read!() |> Jason.decode!()
+
+    patterns = [
+      {"x$|x\\n",
+       [
+         {"x\n", [3], "\n"},
+         {"yx\n", [1, 3], "y\n"},
+         {"xy", [0, 1], "xy"},
+         {"yxy", [1, 0, 1], "yxy"},
+         {"x", [], ""},
+         {"yx", [1], "y"}
+       ]},
+      {"x\\n|x$",
+       [
+         {"x\n", [], ""},
+         {"yx\n", [1], "y"},
+         {"xy", [0, 1], "xy"},
+         {"yxy", [1, 0, 1], "yxy"},
+         {"x", [], ""},
+         {"yx", [1], "y"}
+       ]}
+    ]
+
+    for {pattern, cases} <- patterns do
+      json =
+        base
+        |> Map.put("normalizer", nil)
+        |> put_in(["pre_tokenizer", "pretokenizers", Access.at(0), "pattern", "Regex"], pattern)
+        |> put_in(["pre_tokenizer", "pretokenizers", Access.at(0), "behavior"], "Removed")
+        |> Jason.encode!()
+
+      {:ok, iree_tokenizer} = Tokenizer.from_buffer(json)
+      {:ok, hf_tokenizer} = HFTokenizer.from_buffer(json)
+
+      for add_special_tokens <- [true, false], {input, base_ids, decoded} <- cases do
+        expected_ids = if add_special_tokens, do: base_ids ++ [5], else: base_ids
+        expected_decoded = if add_special_tokens, do: decoded <> "<embedding>", else: decoded
+
+        {:ok, iree_encoding} =
+          Tokenizer.encode(iree_tokenizer, input, add_special_tokens: add_special_tokens)
+
+        {:ok, hf_encoding} =
+          HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: add_special_tokens)
+
+        assert Encoding.get_ids(iree_encoding) == expected_ids
+        assert Encoding.get_ids(iree_encoding) == HFEncoding.get_ids(hf_encoding)
+        assert Encoding.get_tokens(iree_encoding) == HFEncoding.get_tokens(hf_encoding)
+        assert Encoding.get_type_ids(iree_encoding) == HFEncoding.get_type_ids(hf_encoding)
+
+        assert {:ok, iree_decoded} =
+                 Tokenizer.decode(iree_tokenizer, expected_ids, skip_special_tokens: false)
+
+        assert {:ok, hf_decoded} =
+                 HFTokenizer.decode(hf_tokenizer, expected_ids, skip_special_tokens: false)
+
+        assert iree_decoded == expected_decoded
+        assert hf_decoded == expected_decoded
+
+        seam_chunkings =
+          if byte_size(input) > 1 do
+            for seam <- 1..(byte_size(input) - 1) do
+              [
+                binary_part(input, 0, seam),
+                binary_part(input, seam, byte_size(input) - seam)
+              ]
+            end
+          else
+            []
+          end
+
+        chunkings = Enum.uniq([[input], String.codepoints(input)] ++ seam_chunkings)
+
+        for chunks <- chunkings do
+          {:ok, stream} =
+            EncodeStream.new(iree_tokenizer,
+              add_special_tokens: add_special_tokens,
+              max_chunk_bytes: 1
+            )
+
+          prefix_ids =
+            Enum.flat_map(chunks, fn chunk ->
+              {:ok, ids} = EncodeStream.feed(stream, chunk)
+              ids
+            end)
+
+          assert {:ok, suffix_ids} = EncodeStream.finalize(stream)
+          assert prefix_ids ++ suffix_ids == expected_ids
+
+          assert {:error, {:invalid_argument, "stream already finalized"}} =
+                   EncodeStream.finalize(stream)
+        end
+      end
+    end
+  end
+
   test "exact byte-level BPE preserves future lower-rank merge priority" do
     fixture = fixture_path("bpe_bytelevel_window_frontier.json")
     {:ok, iree_tokenizer} = Tokenizer.from_file(fixture)

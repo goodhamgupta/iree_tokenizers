@@ -651,6 +651,10 @@ void iree_tokenizer_regex_exec_initialize(
   state->pending_lookahead = false;
   state->pending_lookahead_state = 0;
   state->pending_match_end = 0;
+  // No pending end-anchor assertion at start.
+  state->pending_end_anchor = false;
+  state->pending_end_anchor_state = 0;
+  state->pending_end_anchor_match_end = 0;
   // No fallback accept at start.
   state->has_accept_fallback = false;
   state->last_accept_fallback = 0;
@@ -731,6 +735,27 @@ static inline iree_status_t iree_tokenizer_regex_emit_match(
   return iree_ok_status();
 }
 
+// Emits the branch-aware best candidate selected by
+// iree_tokenizer_regex_update_best_candidate().
+static inline iree_status_t iree_tokenizer_regex_emit_best_candidate(
+    iree_tokenizer_regex_exec_state_t* state,
+    iree_tokenizer_regex_match_callback_fn_t callback, void* user_data,
+    iree_host_size_t* out_match_end) {
+  if (state->best_branch_idx >= 64) {
+    return iree_ok_status();
+  }
+
+  iree_host_size_t match_end = state->best_match_end;
+  if (out_match_end) *out_match_end = match_end;
+  if (!callback) return iree_ok_status();
+
+  iree_tokenizer_regex_match_t match = {
+      .start = state->match_start,
+      .end = match_end,
+  };
+  return callback(user_data, match);
+}
+
 //===----------------------------------------------------------------------===//
 // Lookahead Helpers
 //===----------------------------------------------------------------------===//
@@ -756,7 +781,7 @@ static inline bool iree_tokenizer_regex_requires_start_anchor(
 }
 
 // Returns true if the given accepting state requires end anchor ($ pattern).
-// A state with end anchor only produces a valid match at end of input.
+// Oniguruma-compatible `$` accepts before LF or at true end of input.
 static inline bool iree_tokenizer_regex_requires_end_anchor(
     const iree_tokenizer_regex_dfa_t* dfa, uint16_t state) {
   if (!dfa->end_anchor_bitmap) return false;
@@ -860,6 +885,17 @@ static inline void iree_tokenizer_regex_defer_lookahead(
   state->pending_match_end = match_end;
 }
 
+// Defers an end-anchor assertion that lands exactly at a chunk boundary.
+// The assertion is resolved by the first codepoint of the next chunk (LF
+// passes, anything else fails) or by finalize (true EOF passes).
+static inline void iree_tokenizer_regex_defer_end_anchor(
+    iree_tokenizer_regex_exec_state_t* state, uint16_t accepting_state,
+    iree_host_size_t match_end) {
+  state->pending_end_anchor = true;
+  state->pending_end_anchor_state = accepting_state;
+  state->pending_end_anchor_match_end = match_end;
+}
+
 // Resets executor state to begin searching for a new match.
 //
 // This is called after:
@@ -886,6 +922,7 @@ static inline void iree_tokenizer_regex_reset_to_start(
   state->has_accept = false;
   state->has_accept_fallback = false;
   state->in_match = false;
+  state->pending_end_anchor = false;
   // Reset branch tracking for new match attempt.
   iree_tokenizer_regex_reset_best_candidate(state);
 }
@@ -925,7 +962,22 @@ static inline void iree_tokenizer_regex_evaluate_accepting_state(
       iree_tokenizer_regex_defer_lookahead(state, accepting_state, accept_pos);
     }
   } else if (iree_tokenizer_regex_requires_end_anchor(dfa, accepting_state)) {
-    // End anchor state: defer acceptance until finalize confirms end of input.
+    if (peek_offset < peek_view.size) {
+      // Oniguruma `$` is a line-end assertion: it succeeds immediately before
+      // LF as well as at true EOF. The LF itself is not consumed.
+      iree_host_size_t peek_position = peek_offset;
+      uint32_t next_codepoint =
+          iree_unicode_utf8_decode(peek_view, &peek_position);
+      if (next_codepoint == '\n') {
+        state->last_accept = accept_pos;
+        state->has_accept = true;
+        state->pending_end_anchor = false;
+      }
+    } else {
+      // At a chunk boundary, wait for the next codepoint or true EOF.
+      iree_tokenizer_regex_defer_end_anchor(state, accepting_state,
+                                            accept_pos);
+    }
   } else {
     // No lookahead or end anchor - accept unconditionally.
     state->has_accept = true;
@@ -1052,6 +1104,7 @@ static iree_status_t iree_tokenizer_regex_process_rewind_buffer(
   state->in_match = false;
   state->has_accept = false;
   state->has_accept_fallback = false;
+  state->pending_end_anchor = false;
   iree_tokenizer_regex_reset_best_candidate(state);
 
   // Process buffer bytes through the DFA.
@@ -1100,6 +1153,7 @@ static iree_status_t iree_tokenizer_regex_process_rewind_buffer(
           state->in_match = false;
           state->has_accept = false;
           state->has_accept_fallback = false;
+          state->pending_end_anchor = false;
           iree_tokenizer_regex_reset_best_candidate(state);
           continue;
         }
@@ -1108,6 +1162,7 @@ static iree_status_t iree_tokenizer_regex_process_rewind_buffer(
         state->in_match = false;
         state->has_accept = false;
         state->has_accept_fallback = false;
+        state->pending_end_anchor = false;
         iree_tokenizer_regex_reset_best_candidate(state);
       }
       // Try current byte from start state.
@@ -1302,6 +1357,45 @@ static inline bool iree_tokenizer_regex_resolve_pending_lookahead(
   return !rejected;
 }
 
+// Resolves a `$` assertion deferred at the previous chunk boundary.
+// Oniguruma accepts `$` before LF; any other next codepoint rejects it. When
+// accepted, register the saved DFA state with branch tracking before the LF is
+// consumed so leftmost-first alternation priority is chunk-invariant. Returns
+// true when the newly registered candidate can be committed immediately.
+// True EOF is handled by exec_finalize().
+static inline bool iree_tokenizer_regex_resolve_pending_end_anchor(
+    const iree_tokenizer_regex_dfa_t* dfa,
+    iree_tokenizer_regex_exec_state_t* state,
+    iree_string_view_t chunk_view, iree_host_size_t peek_offset) {
+  if (!state->pending_end_anchor) {
+    return false;
+  }
+
+  if (peek_offset >= chunk_view.size) {
+    return false;
+  }
+
+  uint16_t pending_state = state->pending_end_anchor_state;
+  iree_host_size_t pending_end = state->pending_end_anchor_match_end;
+  iree_host_size_t decode_position = peek_offset;
+  uint32_t next_codepoint =
+      iree_unicode_utf8_decode(chunk_view, &decode_position);
+  bool accepted = next_codepoint == '\n';
+  bool should_commit = false;
+  if (accepted) {
+    if (!state->has_accept || pending_end > state->last_accept) {
+      state->last_accept = pending_end;
+      state->has_accept = true;
+    }
+    should_commit = iree_tokenizer_regex_update_best_candidate(
+        dfa, state, pending_state, pending_end,
+        /*lookahead_confirmed=*/true);
+  }
+
+  state->pending_end_anchor = false;
+  return should_commit;
+}
+
 iree_status_t iree_tokenizer_regex_exec_feed(
     const iree_tokenizer_regex_dfa_t* dfa,
     iree_tokenizer_regex_exec_state_t* state, iree_string_view_t chunk,
@@ -1322,6 +1416,33 @@ iree_status_t iree_tokenizer_regex_exec_feed(
   // Resolve pending lookahead from previous chunk if we have new data.
   if (state->pending_lookahead && chunk.size > 0) {
     iree_tokenizer_regex_resolve_pending_lookahead(dfa, state, chunk, 0);
+  }
+  if (state->pending_end_anchor && chunk.size > 0) {
+    bool should_commit = iree_tokenizer_regex_resolve_pending_end_anchor(
+        dfa, state, chunk, 0);
+    if (should_commit) {
+      iree_host_size_t match_end = 0;
+      IREE_RETURN_IF_ERROR(iree_tokenizer_regex_emit_best_candidate(
+          state, callback, user_data, &match_end));
+
+      if (requires_start) {
+        state->in_match = false;
+        state->has_accept = false;
+        state->has_accept_fallback = false;
+        iree_tokenizer_regex_reset_best_candidate(state);
+        return iree_ok_status();
+      }
+
+      iree_tokenizer_regex_reset_to_start(state, dfa, match_end);
+      state->last_accept = match_end;
+      if (match_end >= base_offset) {
+        position = match_end - base_offset;
+      } else {
+        IREE_RETURN_IF_ERROR(iree_tokenizer_regex_resume_via_buffer(
+            dfa, state, match_end));
+        position = 0;
+      }
+    }
   }
 
   // Main processing loop.
@@ -1544,21 +1665,18 @@ iree_status_t iree_tokenizer_regex_exec_feed(
     // deferred at chunk boundary and the branch fast-path commits a match
     // before lookahead can be evaluated.
     iree_host_size_t branch_check_end = base_offset + position;
-    bool lookahead_confirmed =
-        !iree_tokenizer_regex_has_lookahead(dfa, next_state) ||
+    bool assertion_confirmed =
+        (!iree_tokenizer_regex_has_lookahead(dfa, next_state) &&
+         !iree_tokenizer_regex_requires_end_anchor(dfa, next_state)) ||
         (state->has_accept && state->last_accept == branch_check_end);
     if (iree_tokenizer_regex_update_best_candidate(
-            dfa, state, next_state, branch_check_end, lookahead_confirmed)) {
+            dfa, state, next_state, branch_check_end, assertion_confirmed)) {
       // Higher-priority branches are dead - emit best candidate.
       // Use best_match_end as the match end position.
       if (state->best_branch_idx < 64) {
-        iree_tokenizer_regex_match_t match = {
-            .start = state->match_start,
-            .end = state->best_match_end,
-        };
-        if (callback) {
-          IREE_RETURN_IF_ERROR(callback(user_data, match));
-        }
+        iree_host_size_t best_match_end = 0;
+        IREE_RETURN_IF_ERROR(iree_tokenizer_regex_emit_best_candidate(
+            state, callback, user_data, &best_match_end));
 
         // With start anchor (^), only one match at position 0 is possible.
         // Reset state before returning so callers see in_match=false.
@@ -1571,7 +1689,7 @@ iree_status_t iree_tokenizer_regex_exec_feed(
         }
 
         // Resume scanning from the end of the emitted match.
-        iree_host_size_t resume_position = state->best_match_end;
+        iree_host_size_t resume_position = best_match_end;
         iree_tokenizer_regex_reset_to_start(state, dfa, resume_position);
         state->last_accept = resume_position;
         if (resume_position >= base_offset) {
@@ -1616,6 +1734,23 @@ iree_status_t iree_tokenizer_regex_exec_finalize(
       state->has_accept = true;
     }
     state->pending_lookahead = false;
+  }
+
+  // A `$` assertion pending at the final chunk boundary is satisfied by true
+  // EOF. Use the position captured when the accepting state was reached; this
+  // remains correct even when finalization is re-entered by a caller.
+  if (state->pending_end_anchor) {
+    uint16_t pending_state = state->pending_end_anchor_state;
+    iree_host_size_t pending_end = state->pending_end_anchor_match_end;
+    if (!state->has_accept ||
+        pending_end > state->last_accept) {
+      state->last_accept = pending_end;
+      state->has_accept = true;
+    }
+    iree_tokenizer_regex_update_best_candidate(
+        dfa, state, pending_state, pending_end,
+        /*lookahead_confirmed=*/true);
+    state->pending_end_anchor = false;
   }
 
   // Handle end anchor ($) at end of stream.

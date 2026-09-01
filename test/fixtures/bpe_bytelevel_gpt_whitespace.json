@@ -1,0 +1,62 @@
+{
+  "version": "1.0",
+  "pre_tokenizer": {
+    "type": "ByteLevel",
+    "add_prefix_space": false,
+    "trim_offsets": true,
+    "use_regex": true
+  },
+  "decoder": {
+    "type": "ByteLevel",
+    "add_prefix_space": false,
+    "trim_offsets": true
+  },
+  "model": {
+    "type": "BPE",
+    "dropout": null,
+    "unk_token": null,
+    "continuing_subword_prefix": "",
+    "end_of_word_suffix": "",
+    "fuse_unk": false,
+    "byte_fallback": false,
+    "ignore_merges": false,
+    "vocab": {
+      "Ġ": 0,
+      "a": 1,
+      "Ġa": 2,
+      "ĠĠ": 3,
+      "ĠĠĠ": 4,
+      "ĠĠĠĠ": 5,
+      "r": 6,
+      "e": 7,
+      "t": 8,
+      "u": 9,
+      "n": 10,
+      "re": 11,
+      "ret": 12,
+      "retu": 13,
+      "retur": 14,
+      "return": 15,
+      "Ġreturn": 16,
+      "ĉ": 17,
+      "ĉĉ": 18,
+      "Ċ": 19,
+      "ĊĊ": 20,
+      "-": 21
+    },
+    "merges": [
+      ["Ġ", "Ġ"],
+      ["ĠĠ", "Ġ"],
+      ["ĠĠ", "ĠĠ"],
+      ["Ġ", "a"],
+      ["r", "e"],
+      ["re", "t"],
+      ["ret", "u"],
+      ["retu", "r"],
+      ["retur", "n"],
+      ["Ġ", "return"],
+      ["ĉ", "ĉ"],
+      ["Ċ", "Ċ"]
+    ]
+  }
+}
