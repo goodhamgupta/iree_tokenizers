@@ -30,7 +30,7 @@
 // whitespace) and is used with Split in ISOLATED mode.
 static const char kGPT2RegexPattern[] =
     "'s|'t|'re|'ve|'m|'ll|'d| ?\\p{L}+| ?\\p{N}+| "
-    "?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)|\\s+";
+    "?[^\\s\\p{L}\\p{N}]+|\\s+(?!\\S)";
 
 static const iree_string_view_t kThousandsSplitPattern =
     IREE_SVL("\\d{1,3}(?=(?:\\d{3})*\\b)");

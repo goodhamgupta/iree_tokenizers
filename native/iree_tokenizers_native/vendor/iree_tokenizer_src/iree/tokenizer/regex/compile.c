@@ -142,7 +142,7 @@ iree_status_t iree_tokenizer_regex_compile(
   // loops in the executor. Patterns like a*, a?, (a|)* fall into this category.
   //
   // Patterns with end anchor like ^.*$ are safe because acceptance is deferred
-  // until end of input - no intermediate empty matches occur.
+  // until a line boundary - no immediate empty matches occur.
   if (iree_status_is_ok(status) && dfa.states[0]->is_accepting &&
       !dfa.states[0]->requires_end_anchor) {
     if (out_error) {

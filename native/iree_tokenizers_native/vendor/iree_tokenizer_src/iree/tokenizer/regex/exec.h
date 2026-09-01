@@ -236,7 +236,7 @@ typedef enum iree_tokenizer_regex_dfa_flag_bits_e {
   IREE_TOKENIZER_UTIL_REGEX_DFA_FLAG_CASE_INSENSITIVE = 1 << 2,
   // DFA has anchor bitmaps (start_anchor and end_anchor bitmaps follow).
   // Start anchor: states that require match to start at position 0.
-  // End anchor: accepting states that require match to end at end of input.
+  // End anchor: accepting states that require a line end (before LF or EOF).
   IREE_TOKENIZER_UTIL_REGEX_DFA_FLAG_HAS_ANCHORS = 1 << 3,
   // DFA has branch tracking bitmasks for PCRE-compatible alternation.
   // alive_branches: which alternation branches can reach each state.
@@ -263,7 +263,7 @@ typedef uint16_t iree_tokenizer_regex_dfa_flags_t;
 //   4. Start anchor bitmap (if HAS_ANCHORS): uint64_t[ceil(num_states/64)]
 //        States that require matching to start at position 0.
 //   5. End anchor bitmap (if HAS_ANCHORS): uint64_t[ceil(num_states/64)]
-//        Accepting states that require matching to end at end of input.
+//        Accepting states that require matching before LF or at true EOF.
 //   6. Alive branches (if HAS_BRANCHES): uint64_t[num_states]
 //        For each state, which alternation branches can reach it.
 //   7. Accepting branches (if HAS_BRANCHES): uint64_t[num_states]
@@ -455,6 +455,20 @@ typedef struct iree_tokenizer_regex_exec_state_t {
   uint16_t pending_lookahead_state;
   // Match end position if accepted.
   iree_host_size_t pending_match_end;
+
+  // Pending end-anchor state for chunk boundary handling.
+  //
+  // Oniguruma's `$` accepts both at true end-of-input and immediately before
+  // an LF. When an anchored accepting state lands exactly at a chunk boundary,
+  // the executor must wait for the first codepoint of the next chunk before it
+  // can distinguish those cases.
+  bool pending_end_anchor;
+  // DFA accepting state whose anchored branch is pending. This preserves
+  // leftmost-first alternation priority when the assertion is resolved in a
+  // later chunk.
+  uint16_t pending_end_anchor_state;
+  // Match end position if the next codepoint is LF or the stream finalizes.
+  iree_host_size_t pending_end_anchor_match_end;
 
   // Fallback acceptance for mixed lookahead/non-lookahead alternation.
   // For patterns like \s+(?!\S)|\s+, the DFA state accepts for BOTH branches.

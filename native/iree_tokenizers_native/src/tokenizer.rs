@@ -1067,7 +1067,6 @@ pub(crate) fn tokenizer_metadata_from_hf_json(json: &[u8]) -> TokenizerMetadata 
     };
 
     let stream_encode_strategy = infer_stream_encode_strategy(&root);
-
     TokenizerMetadata {
         decode_strategy,
         stream_encode_strategy,
@@ -1075,6 +1074,13 @@ pub(crate) fn tokenizer_metadata_from_hf_json(json: &[u8]) -> TokenizerMetadata 
 }
 
 fn infer_stream_encode_strategy(root: &Value) -> StreamEncodeStrategy {
+    // Regex normalizers containing `$` need future input to distinguish a
+    // line boundary from a chunk boundary. This is model-independent: every
+    // downstream model would otherwise observe prematurely normalized text.
+    if has_end_anchored_regex_normalizer(root) {
+        return StreamEncodeStrategy::BufferedFinalize;
+    }
+
     let model_type = root
         .get("model")
         .and_then(|model| model.get("type"))
@@ -1094,6 +1100,52 @@ fn infer_stream_encode_strategy(root: &Value) -> StreamEncodeStrategy {
         }
         _ => StreamEncodeStrategy::Native,
     }
+}
+
+fn has_end_anchored_regex_normalizer(root: &Value) -> bool {
+    fn node_matches(node: &Value) -> bool {
+        let Some(object) = node.as_object() else {
+            return false;
+        };
+
+        match object.get("type").and_then(Value::as_str) {
+            Some("Sequence") => object
+                .get("normalizers")
+                .and_then(Value::as_array)
+                .is_some_and(|children| children.iter().any(node_matches)),
+            Some("Replace") => object
+                .get("pattern")
+                .and_then(Value::as_object)
+                .and_then(|pattern| pattern.get("Regex"))
+                .and_then(Value::as_str)
+                .is_some_and(regex_contains_end_anchor),
+            _ => false,
+        }
+    }
+
+    root.get("normalizer").is_some_and(node_matches)
+}
+
+fn regex_contains_end_anchor(pattern: &str) -> bool {
+    let mut escaped = false;
+    let mut in_class = false;
+
+    for byte in pattern.bytes() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        match byte {
+            b'\\' => escaped = true,
+            b'[' if !in_class => in_class = true,
+            b']' if in_class => in_class = false,
+            b'$' if !in_class => return true,
+            _ => {}
+        }
+    }
+
+    false
 }
 
 fn is_exact_byte_level_bpe_candidate(root: &Value) -> bool {
@@ -1407,12 +1459,16 @@ fn rewrite_split_regex(pattern: &str) -> Option<String> {
 
 const QWEN_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 const SUPERWHISPER_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+const GLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+const PHONELLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
 fn rewrite_gpt_whitespace_fallback(pattern: &str) -> Option<String> {
     const TRAILING_WHITESPACE_FALLBACK: &str = r"|\s+";
 
     if pattern == QWEN_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
         || pattern == SUPERWHISPER_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
+        || pattern == GLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
+        || pattern == PHONELLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
     {
         pattern
             .strip_suffix(TRAILING_WHITESPACE_FALLBACK)
@@ -1611,6 +1667,26 @@ mod sanitize_tests {
     }
 
     #[test]
+    fn drops_glm_gpt_whitespace_fallback_for_bytelevel_split_parity() {
+        let out =
+            rewrite_split_regex(GLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK).expect("expected rewrite");
+        assert_eq!(
+            out,
+            r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)"
+        );
+    }
+
+    #[test]
+    fn drops_phonellm_gpt_whitespace_fallback_for_bytelevel_split_parity() {
+        let out = rewrite_split_regex(PHONELLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK)
+            .expect("expected rewrite");
+        assert_eq!(
+            out,
+            r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)"
+        );
+    }
+
+    #[test]
     fn leaves_deepseek_gpt_whitespace_fallback_for_native_boundary_handling() {
         let input = concat!(
             r##"[!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~][A-Za-z]+|[^"##,
@@ -1737,5 +1813,45 @@ mod sanitize_tests {
             infer_stream_encode_strategy(&root),
             StreamEncodeStrategy::Native
         );
+    }
+
+    #[test]
+    fn buffers_bpe_with_end_anchored_regex_normalizer() {
+        for model_type in ["BPE", "WordPiece", "WordLevel"] {
+            let root = serde_json::json!({
+                "model": {"type": model_type},
+                "normalizer": {
+                    "type": "Sequence",
+                    "normalizers": [
+                        {"type": "Replace", "pattern": {"Regex": "\\n$"}, "content": ""},
+                        {"type": "NFC"}
+                    ]
+                },
+                "pre_tokenizer": {"type": "ByteLevel", "use_regex": false}
+            });
+
+            assert!(has_end_anchored_regex_normalizer(&root));
+            assert_eq!(
+                infer_stream_encode_strategy(&root),
+                StreamEncodeStrategy::BufferedFinalize
+            );
+
+            for pattern in [r"\$", r"[$]", r"price\$", r"[^$]"] {
+                let negative = serde_json::json!({
+                    "model": {"type": model_type},
+                    "normalizer": {
+                        "type": "Replace",
+                        "pattern": {"Regex": pattern},
+                        "content": ""
+                    },
+                    "pre_tokenizer": {"type": "Whitespace"}
+                });
+                assert!(!has_end_anchored_regex_normalizer(&negative));
+                assert_eq!(
+                    infer_stream_encode_strategy(&negative),
+                    StreamEncodeStrategy::Native
+                );
+            }
+        }
     }
 }

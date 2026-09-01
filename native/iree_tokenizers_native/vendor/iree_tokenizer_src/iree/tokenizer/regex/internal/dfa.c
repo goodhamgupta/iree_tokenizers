@@ -1361,7 +1361,7 @@ iree_status_t iree_tokenizer_regex_dfa_serialize(
       }
     }
 
-    // End anchor bitmap: accepting states that require match at end of input.
+    // End anchor bitmap: accepting states that require a line end.
     // Follows immediately after start anchor bitmap.
     uint64_t* end_anchor_bitmap = (uint64_t*)(data + anchor_bitmaps_offset +
                                               bitmap_qwords * sizeof(uint64_t));
