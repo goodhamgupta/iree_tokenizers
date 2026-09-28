@@ -35,6 +35,57 @@ defmodule IREETokenizers.BatchIntegrationTest do
     assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
   end
 
+  test "GLiNER Metaspace preserves isolated control characters" do
+    {iree_tokenizer, hf_tokenizer} =
+      case System.get_env("GLINER_TOKENIZER_JSON") do
+        nil ->
+          {:ok, iree} = IREETokenizer.from_pretrained("fastino/gliner2.5-multi-v1")
+          {:ok, hf} = HFTokenizer.from_pretrained("fastino/gliner2.5-multi-v1")
+          {iree, hf}
+
+        path ->
+          {:ok, iree} = IREETokenizer.from_file(path)
+          {:ok, hf} = HFTokenizer.from_file(path)
+          {iree, hf}
+      end
+
+    inputs = [
+      "bell\x07tab\ttab vertical\vform\ftab back\bspace",
+      "vertical\vform\ftab",
+      "vertical\v\fform\t tab"
+    ]
+
+    for add_special_tokens <- [true, false] do
+      opts = [add_special_tokens: add_special_tokens]
+      {:ok, iree_batch} = IREETokenizer.encode_batch(iree_tokenizer, inputs, opts)
+      {:ok, hf_batch} = HFTokenizer.encode_batch(hf_tokenizer, inputs, opts)
+
+      for {input, {iree_encoding, hf_encoding}} <-
+            Enum.zip(inputs, Enum.zip(iree_batch, hf_batch)) do
+        assert {:ok, ^iree_encoding} = IREETokenizer.encode(iree_tokenizer, input, opts)
+        assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
+        assert iree_encoding.tokens == HFEncoding.get_tokens(hf_encoding)
+
+        assert IREETokenizer.decode(iree_tokenizer, iree_encoding.ids, skip_special_tokens: false) ==
+                 HFTokenizer.decode(hf_tokenizer, HFEncoding.get_ids(hf_encoding),
+                   skip_special_tokens: false
+                 )
+
+        {:ok, stream} = EncodeStream.new(iree_tokenizer, opts ++ [max_chunk_bytes: 1])
+
+        prefix_ids =
+          for <<byte <- input>>, reduce: [] do
+            ids ->
+              {:ok, chunk_ids} = EncodeStream.feed(stream, <<byte>>)
+              ids ++ chunk_ids
+          end
+
+        assert {:ok, suffix_ids} = EncodeStream.finalize(stream)
+        assert prefix_ids ++ suffix_ids == iree_encoding.ids
+      end
+    end
+  end
+
   test "bert batch encode matches per-item Hugging Face parity on emoji regression corpus" do
     inputs = [
       "Hello, world!",

@@ -94,7 +94,13 @@ fn build_unigram_tokenizer_json(
 
     root.insert(
         "pre_tokenizer".to_string(),
-        sentencepiece_unigram_pretokenizer_json(add_dummy_prefix(model)),
+        sentencepiece_unigram_pretokenizer_json(
+            add_dummy_prefix(model),
+            model
+                .normalizer()
+                .and_then(|normalizer| normalizer.remove_extra_whitespaces)
+                .unwrap_or(true),
+        ),
     );
     root.insert(
         "decoder".to_string(),
@@ -207,14 +213,28 @@ fn unigram_normalizer_json(model: &SentencePieceModel) -> Option<Value> {
     }
 }
 
-fn sentencepiece_unigram_pretokenizer_json(add_prefix_space: bool) -> Value {
-    json!({
+fn sentencepiece_unigram_pretokenizer_json(
+    add_prefix_space: bool,
+    remove_extra_whitespaces: bool,
+) -> Value {
+    let metaspace = json!({
         "type": "Metaspace",
         "replacement": "▁",
         "str_rep": "▁",
         "add_prefix_space": add_prefix_space,
         "split": true
-    })
+    });
+
+    // Metaspace itself preserves repeated spaces and non-space whitespace.
+    // SentencePiece's default whitespace removal therefore needs its own stage.
+    if remove_extra_whitespaces {
+        json!({
+            "type": "Sequence",
+            "pretokenizers": [{"type": "WhitespaceSplit"}, metaspace]
+        })
+    } else {
+        metaspace
+    }
 }
 
 fn sentencepiece_unigram_decoder_json(add_prefix_space: bool) -> Value {
@@ -540,6 +560,31 @@ mod tests {
             model_type: "BPE".to_string(),
             decode_strategy: metadata.decode_strategy,
             stream_encode_strategy: metadata.stream_encode_strategy,
+        }
+    }
+
+    #[test]
+    fn unigram_space_collapse_matches_sentencepiece_reference() {
+        let model_bytes = include_bytes!("../../../test/fixtures/test_sentencepiece.model");
+        let spp = SentencePieceProcessor::from_serialized_proto(model_bytes).unwrap();
+        let tokenizer_json = model_to_tokenizer_json(model_bytes).unwrap();
+        let tokenizer = load_iree_tokenizer_from_json(&tokenizer_json);
+
+        for text in [
+            " hello  world ",
+            "hello    world",
+            "  hello",
+            "world  ",
+            "   ",
+        ] {
+            let expected: Vec<i32> = spp
+                .encode(text)
+                .unwrap()
+                .iter()
+                .map(|piece| piece.id as i32)
+                .collect();
+            let encoding = encode_impl(&tokenizer, text.as_bytes(), false, false).unwrap();
+            assert_eq!(encoding.ids, expected, "encode mismatch for {text:?}");
         }
     }
 

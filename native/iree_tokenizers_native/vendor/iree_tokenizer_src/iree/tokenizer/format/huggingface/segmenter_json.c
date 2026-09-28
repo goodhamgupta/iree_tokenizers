@@ -492,10 +492,12 @@ static iree_status_t iree_tokenizer_parse_metaspace_pre_tokenizer(
 
   // Metaspace with split=true produces word-level segments by splitting on
   // spaces, enabling the word cache optimization in the BPE model.
+  // It does not discard/collapse whitespace like WhitespaceSplit: only literal
+  // spaces become replacement characters, and other whitespace is preserved.
+  // HAS_WHITESPACE_SPLIT must come from an actual WhitespaceSplit stage.
   if (split_enabled) {
     *out_flags |=
-        IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_WORD_LEVEL_SPLIT |
-        IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_HAS_WHITESPACE_SPLIT;
+        IREE_TOKENIZER_HUGGINGFACE_PRE_TOKENIZER_FLAG_WORD_LEVEL_SPLIT;
   }
 
   return iree_tokenizer_segmenter_metaspace_allocate(
