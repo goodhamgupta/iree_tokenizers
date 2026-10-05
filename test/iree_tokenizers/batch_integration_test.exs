@@ -35,6 +35,38 @@ defmodule IREETokenizers.BatchIntegrationTest do
     assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
   end
 
+  test "distilbert removes non-tab control characters during Bert normalization" do
+    input = "bell\x07tab\ttab vertical\vform\ftab back\bspace"
+
+    {:ok, iree_tokenizer} = IREETokenizer.from_pretrained("distilbert/distilbert-base-uncased")
+    {:ok, hf_tokenizer} = HFTokenizer.from_pretrained("distilbert/distilbert-base-uncased")
+
+    for add_special_tokens <- [true, false] do
+      {:ok, iree_encoding} =
+        IREETokenizer.encode(iree_tokenizer, input, add_special_tokens: add_special_tokens)
+
+      {:ok, hf_encoding} =
+        HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: add_special_tokens)
+
+      assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
+      assert iree_encoding.tokens == HFEncoding.get_tokens(hf_encoding)
+
+      assert {:ok, iree_decoded} = IREETokenizer.decode(iree_tokenizer, iree_encoding.ids)
+      assert {:ok, hf_decoded} = HFTokenizer.decode(hf_tokenizer, HFEncoding.get_ids(hf_encoding))
+      assert iree_decoded == hf_decoded
+
+      {:ok, [iree_batch_encoding]} =
+        IREETokenizer.encode_batch(iree_tokenizer, [input],
+          add_special_tokens: add_special_tokens
+        )
+
+      {:ok, [hf_batch_encoding]} =
+        HFTokenizer.encode_batch(hf_tokenizer, [input], add_special_tokens: add_special_tokens)
+
+      assert iree_batch_encoding.ids == HFEncoding.get_ids(hf_batch_encoding)
+    end
+  end
+
   test "GLiNER Metaspace preserves isolated control characters" do
     {iree_tokenizer, hf_tokenizer} =
       case System.get_env("GLINER_TOKENIZER_JSON") do
@@ -257,7 +289,8 @@ defmodule IREETokenizers.BatchIntegrationTest do
       "def f(x):\n    return [i**2 for i in range(x) if i % 2 == 0]\n"
     ]
 
-    tokenizer_json = System.get_env("QWEN38_TOKENIZER_JSON")
+    tokenizer_json =
+      System.get_env("MINICPM5_TOKENIZER_JSON") || System.get_env("QWEN38_TOKENIZER_JSON")
 
     {iree_tokenizer, hf_tokenizer} =
       if tokenizer_json do

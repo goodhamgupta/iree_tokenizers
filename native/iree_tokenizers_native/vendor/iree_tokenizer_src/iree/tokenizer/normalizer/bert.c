@@ -60,6 +60,9 @@ static inline bool iree_tokenizer_bert_is_whitespace(uint32_t codepoint) {
   if (codepoint == '\t' || codepoint == '\n' || codepoint == '\r') {
     return true;
   }
+  if (iree_unicode_is_other(codepoint)) {
+    return false;
+  }
   return iree_unicode_is_whitespace(codepoint);
 }
 
