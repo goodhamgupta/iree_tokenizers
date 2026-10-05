@@ -20,6 +20,7 @@ on:
       - ".github/workflows/parity-monitor.yml"
       - ".github/workflows/release.yml"
       - ".github/workflows/release-package.yml"
+      - ".github/workflows/repair-release-checksums.yml"
   pull_request:
     paths:
       - "**/*.ex"
@@ -38,6 +39,7 @@ on:
       - ".github/workflows/parity-monitor.yml"
       - ".github/workflows/release.yml"
       - ".github/workflows/release-package.yml"
+      - ".github/workflows/repair-release-checksums.yml"
 
 jobs:
   parity-monitor-tests:

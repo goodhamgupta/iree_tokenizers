@@ -2,7 +2,7 @@ defmodule IREETokenizers.MixProject do
   use Mix.Project
 
   @source_url "https://github.com/goodhamgupta/iree_tokenizers"
-  @version "0.8.17"
+  @version "0.8.18"
 
   def project do
     [
@@ -85,6 +85,7 @@ defmodule IREETokenizers.MixProject do
       "README.md",
       "mix.exs",
       "mix.lock",
+      "checksum-Elixir.IREE.Tokenizers.Native.exs",
       "scripts/update_iree_bundle.sh",
       "lib/iree/tokenizers.ex",
       "lib/iree/tokenizers/decode_stream.ex",

@@ -153,5 +153,17 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Fetch deps
         run: mix deps.get
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.workflow_sha }}
+          path: release-tools
+          sparse-checkout: .github/scripts
+      - name: Verify the package includes the native checksums
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          mix hex.build
+          python3 release-tools/.github/scripts/verify_release_package.py \
+            --package "iree_tokenizers-${VERSION}.tar" --version "$VERSION"
       - name: Publish to Hex.pm
         run: mix hex.publish --yes
