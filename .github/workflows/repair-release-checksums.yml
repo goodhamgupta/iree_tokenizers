@@ -1,0 +1,63 @@
+name: Repair release checksum packaging
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Correct a checksum-less Hex archive within its one-hour replacement window"
+        required: true
+        type: choice
+        options: ["0.8.14", "0.8.15", "0.8.16", "0.8.17"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-v${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  repair:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
+      IREE_TOKENIZERS_BUILD: "1"
+      RUSTLER_PRECOMPILED_FORCE_BUILD_ALL: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: v${{ inputs.version }}
+          path: package
+      - name: Download existing release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          gh release download "v${VERSION}" --dir package \
+            --pattern 'checksum-Elixir.IREE.Tokenizers.Native.exs' --pattern '*.tar.gz'
+      - name: Verify native artifacts and prepare packaging-only correction
+        id: plan
+        run: python3 .github/scripts/repair_release_checksums.py
+      - uses: erlef/setup-beam@v1
+        if: steps.plan.outputs.repair == 'true'
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.1.1"
+      - name: Fetch package dependencies
+        if: steps.plan.outputs.repair == 'true'
+        working-directory: package
+        run: mix deps.get
+      - name: Build and verify corrected archive
+        if: steps.plan.outputs.repair == 'true'
+        working-directory: package
+        run: |
+          mix hex.build
+          python3 ../.github/scripts/verify_release_package.py \
+            --package "iree_tokenizers-${VERSION}.tar" --version "$VERSION"
+      - name: Replace the incomplete Hex archive
+        if: steps.plan.outputs.repair == 'true'
+        working-directory: package
+        env:
+          HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+        run: mix hex.publish package --replace --yes
