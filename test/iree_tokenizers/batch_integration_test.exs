@@ -104,6 +104,49 @@ defmodule IREETokenizers.BatchIntegrationTest do
     assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
   end
 
+  test "Jev-Omni BPE preserves overlapping repeated-punctuation merge rank" do
+    path = System.get_env("JEV_OMNI_TOKENIZER_JSON")
+
+    {iree, hf} =
+      if path do
+        {:ok, iree} = IREETokenizer.from_file(path)
+        {:ok, hf} = HFTokenizer.from_file(path)
+        {iree, hf}
+      else
+        {:ok, iree} = IREETokenizer.from_pretrained("akhilaaa3/Jev-Omni")
+        {:ok, hf} = HFTokenizer.from_pretrained("akhilaaa3/Jev-Omni")
+        {iree, hf}
+      end
+
+    inputs = ["!!! ??? ... ,,, ;;; :::", " ,,,", " ;;;", String.duplicate(" ", 15)]
+
+    for special <- [true, false] do
+      for input <- inputs do
+        {:ok, actual} = IREETokenizer.encode(iree, input, add_special_tokens: special)
+        {:ok, expected} = HFTokenizer.encode(hf, input, add_special_tokens: special)
+        assert actual.ids == HFEncoding.get_ids(expected)
+        assert actual.tokens == HFEncoding.get_tokens(expected)
+        assert IREETokenizer.decode(iree, actual.ids) == HFTokenizer.decode(hf, actual.ids)
+
+        {:ok, stream} = EncodeStream.new(iree, add_special_tokens: special, max_chunk_bytes: 1)
+
+        prefix =
+          for <<byte <- input>>, reduce: [] do
+            ids ->
+              {:ok, chunk} = EncodeStream.feed(stream, <<byte>>)
+              ids ++ chunk
+          end
+
+        assert {:ok, suffix} = EncodeStream.finalize(stream)
+        assert prefix ++ suffix == actual.ids
+      end
+
+      {:ok, actual} = IREETokenizer.encode_batch(iree, inputs, add_special_tokens: special)
+      {:ok, expected} = HFTokenizer.encode_batch(hf, inputs, add_special_tokens: special)
+      assert Enum.map(actual, & &1.ids) == Enum.map(expected, &HFEncoding.get_ids/1)
+    end
+  end
+
   test "byte-level bpe preserves merge rank for repeated punctuation" do
     input = "!!! ??? ... ,,, ;;; :::"
     tokenizer_json = System.get_env("GLM_TOKENIZER_JSON")

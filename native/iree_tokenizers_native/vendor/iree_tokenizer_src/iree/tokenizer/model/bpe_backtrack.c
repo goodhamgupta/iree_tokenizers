@@ -657,13 +657,11 @@ static bool iree_tokenizer_bpe_is_suffix_blocked(
       // Skip if the suffix is consumed before this merge could fire.
       if (merge_effective_rank >= suffix_consumed_at[s]) continue;
 
-      // Skip when suffix == prefix (repeating pattern case).
-      // When the suffix token equals the prefix token, we have a repeating
-      // pattern like consecutive metaspaces. In this case, any shorter token
-      // would also face suffix blocking by the same pattern, creating an
-      // infinite loop. The suffix blocking optimization doesn't help here
-      // because there's no "better" tokenization to defer to.
-      if ((int32_t)suffixes[s] == prefix_token) continue;
+      // Equal tokens can still form a lower-rank boundary merge. For example,
+      // the final comma in "▁,," must merge with a following comma before
+      // "▁,," forms. The strict consumption-rank check above preserves
+      // leftmost tie-breaking for homogeneous runs; equality alone is not
+      // a reason to ignore the boundary merge.
 
       // Check if the prefix would be consumed by lower-rank merges first.
       if (iree_tokenizer_bpe_is_suffix_merge_preempted(
