@@ -87,6 +87,59 @@ defmodule IREETokenizers.CompatibilityTest do
     assert Encoding.get_tokens(iree_encoding) == ["▁,", ",,"]
   end
 
+  test "BPE repeated suffix merges preserve rank across alternate decompositions" do
+    fixture = fixture_path("bpe_repeated_suffix_overlap.json")
+    {:ok, tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, reference} = HFTokenizer.from_file(fixture)
+
+    # Use an ASCII stand-in for metaspace to also compare source offsets.
+    # Both _, + , and _ + ,, produce _,,. The trailing comma must merge
+    # with its neighbor first, even though both sides of that merge are equal.
+    inputs = [" ,,,", " ;;;", ",,, ;;;"] ++ Enum.map(1..16, &String.duplicate(" ", &1))
+
+    for special <- [true, false] do
+      for input <- inputs do
+        {:ok, actual} =
+          Tokenizer.encode(tokenizer, input, add_special_tokens: special, track_offsets: true)
+
+        {:ok, expected} = HFTokenizer.encode(reference, input, add_special_tokens: special)
+        assert actual.ids == HFEncoding.get_ids(expected)
+        assert actual.tokens == HFEncoding.get_tokens(expected)
+        assert actual.offsets == HFEncoding.get_offsets(expected)
+        assert actual.type_ids == HFEncoding.get_type_ids(expected)
+        assert actual.attention_mask == HFEncoding.get_attention_mask(expected)
+        assert actual.special_tokens_mask == HFEncoding.get_special_tokens_mask(expected)
+
+        assert Tokenizer.decode(tokenizer, actual.ids) ==
+                 HFTokenizer.decode(reference, actual.ids)
+
+        {:ok, stream} =
+          EncodeStream.new(tokenizer, add_special_tokens: special, max_chunk_bytes: 1)
+
+        prefix =
+          for <<byte <- input>>, reduce: [] do
+            ids ->
+              {:ok, chunk} = EncodeStream.feed(stream, <<byte>>)
+              ids ++ chunk
+          end
+
+        assert {:ok, suffix} = EncodeStream.finalize(stream)
+        assert prefix ++ suffix == actual.ids
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.finalize(stream)
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.feed(stream, " ")
+      end
+
+      {:ok, actual} = Tokenizer.encode_batch(tokenizer, inputs, add_special_tokens: special)
+      {:ok, expected} = HFTokenizer.encode_batch(reference, inputs, add_special_tokens: special)
+      assert Enum.map(actual, & &1.ids) == Enum.map(expected, &HFEncoding.get_ids/1)
+      assert Enum.all?(actual, &is_nil(&1.offsets))
+    end
+  end
+
   test "byte-level BPE path preserves lower-rank emoji merge order" do
     fixture = fixture_path("bpe_bytelevel_emoji_merge_rank.json")
     {:ok, iree_tokenizer} = Tokenizer.from_file(fixture)
