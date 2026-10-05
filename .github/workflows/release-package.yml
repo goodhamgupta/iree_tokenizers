@@ -1,0 +1,157 @@
+name: Release package
+
+on:
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+      sha:
+        required: true
+        type: string
+      version:
+        required: true
+        type: string
+    secrets:
+      HEX_API_KEY:
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  check-published:
+    runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.hex.outputs.published }}
+    steps:
+      - name: Check whether this version is already on Hex
+        id: hex
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          status=$(curl --silent --show-error --output /dev/null --write-out "%{http_code}" \
+            "https://hex.pm/api/packages/iree_tokenizers/releases/${VERSION}")
+          case "$status" in
+            200) echo "published=true" >> "$GITHUB_OUTPUT" ;;
+            404) echo "published=false" >> "$GITHUB_OUTPUT" ;;
+            *) echo "Unexpected Hex API response: $status" >&2; exit 1 ;;
+          esac
+
+  build-assets:
+    needs: check-published
+    if: needs.check-published.outputs.published == 'false'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+          - runner: macos-14
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    env:
+      IREE_TOKENIZERS_BUILD: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.1.1"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fetch deps
+        run: mix deps.get
+      - name: Build NIF
+        run: mix compile
+      - name: Package precompiled NIF
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(mix run -e 'IO.write(Mix.Project.config()[:version])')"
+          artifact="libiree_tokenizers_native-v${version}-nif-2.15-${{ matrix.target }}.so"
+          cp priv/native/iree_tokenizers_native.so "${artifact}"
+          tar -czf "${artifact}.tar.gz" "${artifact}"
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nif-${{ matrix.target }}
+          path: libiree_tokenizers_native-v*.tar.gz
+      - name: Upload GitHub release asset
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: libiree_tokenizers_native-v*.tar.gz
+
+  checksums:
+    needs: build-assets
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+      - name: Download packaged NIF artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.1.1"
+      - name: Fetch deps
+        run: mix deps.get
+      - name: Compile project metadata
+        run: mix compile
+      - name: Generate checksum file
+        shell: bash
+        run: |
+          set -euo pipefail
+          mix run -e '
+            files =
+              Path.wildcard("artifacts/**/*.tar.gz")
+              |> Enum.map(fn path ->
+                hash = :crypto.hash(:sha256, File.read!(path)) |> Base.encode16(case: :lower)
+                %{path: path, checksum: hash, checksum_algo: :sha256}
+              end)
+
+            RustlerPrecompiled.write_checksum!(IREE.Tokenizers.Native, files)
+          '
+      - name: Upload workflow checksum artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rustler-checksum
+          path: checksum-Elixir.IREE.Tokenizers.Native.exs
+      - name: Upload GitHub release checksum
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: checksum-Elixir.IREE.Tokenizers.Native.exs
+
+  publish-hex:
+    needs: checksums
+    runs-on: ubuntu-latest
+    env:
+      HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
+      RUSTLER_PRECOMPILED_FORCE_BUILD_ALL: "true"
+      IREE_TOKENIZERS_BUILD: "1"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.sha }}
+      - name: Download checksum artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: rustler-checksum
+          path: .
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.19.5"
+          otp-version: "28.1.1"
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Fetch deps
+        run: mix deps.get
+      - name: Publish to Hex.pm
+        run: mix hex.publish --yes

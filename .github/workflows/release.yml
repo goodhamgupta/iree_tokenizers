@@ -1,12 +1,14 @@
 name: Release
 
 on:
+  push:
+    branches: [main]
   release:
     types: [published]
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Existing git tag / GitHub release to attach assets to (for example: v0.1.0)"
+        description: "Existing release tag to publish (for example: v0.8.17)"
         required: true
         type: string
 
@@ -14,115 +16,53 @@ permissions:
   contents: write
 
 jobs:
-  build-assets:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - runner: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-          - runner: macos-15-intel
-            target: x86_64-apple-darwin
-          - runner: macos-14
-            target: aarch64-apple-darwin
-    runs-on: ${{ matrix.runner }}
-    env:
-      IREE_TOKENIZERS_BUILD: "1"
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      tag: ${{ steps.plan.outputs.tag }}
+      sha: ${{ steps.plan.outputs.sha }}
+      version: ${{ steps.plan.outputs.version }}
     steps:
       - uses: actions/checkout@v4
-      - uses: erlef/setup-beam@v1
         with:
-          elixir-version: "1.19.5"
-          otp-version: "28.1.1"
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Fetch deps
-        run: mix deps.get
-      - name: Build NIF
-        run: mix compile
-      - name: Package precompiled NIF
-        shell: bash
+          fetch-depth: 0
+      - name: Detect version change and resolve release commit
+        id: plan
+        run: python3 .github/scripts/prepare_release.py
+      - name: Create GitHub release if needed
+        if: steps.plan.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          SHA: ${{ steps.plan.outputs.sha }}
         run: |
           set -euo pipefail
-          version="$(mix run -e 'IO.write(Mix.Project.config()[:version])')"
-          artifact="libiree_tokenizers_native-v${version}-nif-2.15-${{ matrix.target }}.so"
-          cp priv/native/iree_tokenizers_native.so "${artifact}"
-          tar -czf "${artifact}.tar.gz" "${artifact}"
-      - name: Upload workflow artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nif-${{ matrix.target }}
-          path: libiree_tokenizers_native-v*.tar.gz
-      - name: Upload GitHub release asset
-        if: github.event_name == 'release' || github.event.inputs.release_tag != ''
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.release_tag }}
-          files: libiree_tokenizers_native-v*.tar.gz
+          if gh release view "$TAG" > /dev/null 2> release-error.txt; then
+            exit 0
+          fi
+          # Do not mistake authentication or service failures for a missing release.
+          if ! grep -qi 'release not found\|HTTP 404' release-error.txt; then
+            cat release-error.txt >&2
+            exit 1
+          fi
+          args=(--repo "$GH_REPO" --target "$SHA" --title "$TAG" --generate-notes)
+          if [[ "$TAG" == *-* ]]; then args+=(--prerelease); fi
+          gh release create "$TAG" "${args[@]}"
 
-  checksums:
-    needs: build-assets
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download packaged NIF artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: artifacts
-      - uses: erlef/setup-beam@v1
-        with:
-          elixir-version: "1.19.5"
-          otp-version: "28.1.1"
-      - name: Fetch deps
-        run: mix deps.get
-      - name: Compile project metadata
-        run: mix compile
-      - name: Generate checksum file
-        shell: bash
-        run: |
-          set -euo pipefail
-          mix run -e '
-            files =
-              Path.wildcard("artifacts/**/*.tar.gz")
-              |> Enum.map(fn path ->
-                hash = :crypto.hash(:sha256, File.read!(path)) |> Base.encode16(case: :lower)
-                %{path: path, checksum: hash, checksum_algo: :sha256}
-              end)
-
-            RustlerPrecompiled.write_checksum!(IREE.Tokenizers.Native, files)
-          '
-      - name: Upload workflow checksum artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: rustler-checksum
-          path: checksum-Elixir.IREE.Tokenizers.Native.exs
-      - name: Upload GitHub release checksum
-        if: github.event_name == 'release' || github.event.inputs.release_tag != ''
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event_name == 'release' && github.event.release.tag_name || github.event.inputs.release_tag }}
-          files: checksum-Elixir.IREE.Tokenizers.Native.exs
-
-  publish-hex:
-    if: github.event_name == 'release' || github.event.inputs.release_tag != ''
-    needs: checksums
-    runs-on: ubuntu-latest
-    env:
+  publish:
+    needs: prepare
+    if: needs.prepare.outputs.release == 'true'
+    # Serialize the whole pipeline for one version, including manual retries.
+    # Different versions can build without cancelling each other's releases.
+    concurrency:
+      group: release-${{ needs.prepare.outputs.tag }}
+      cancel-in-progress: false
+    uses: ./.github/workflows/release-package.yml
+    with:
+      tag: ${{ needs.prepare.outputs.tag }}
+      sha: ${{ needs.prepare.outputs.sha }}
+      version: ${{ needs.prepare.outputs.version }}
+    secrets:
       HEX_API_KEY: ${{ secrets.HEX_API_KEY }}
-      RUSTLER_PRECOMPILED_FORCE_BUILD_ALL: "true"
-      IREE_TOKENIZERS_BUILD: "1"
-    steps:
-      - uses: actions/checkout@v4
-      - name: Download checksum artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: rustler-checksum
-          path: .
-      - uses: erlef/setup-beam@v1
-        with:
-          elixir-version: "1.19.5"
-          otp-version: "28.1.1"
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Fetch deps
-        run: mix deps.get
-      - name: Publish to Hex.pm
-        run: mix hex.publish --yes

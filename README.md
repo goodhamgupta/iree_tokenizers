@@ -471,6 +471,23 @@ After any vendor refresh, run Rust tests, Elixir tests, and the pretrained
 parity suites. Vendor updates can overwrite local C patches that are required
 for parity.
 
+## Releases
+
+Merge a change to `@version` in `mix.exs` into `main` to publish a release.
+The Release workflow compares versions before and after the push, creates
+`v<VERSION>` at that commit, builds the native assets and checksums, and publishes
+to Hex.pm using the repository's `HEX_API_KEY` secret. Other changes to `mix.exs`
+do not trigger publication. Use a new SemVer version for each release.
+
+To retry an unpublished version with an existing tag:
+
+```bash
+gh workflow run release.yml --ref main -f release_tag=v0.8.17
+```
+
+Manual runs build the tagged commit, validate its version, and skip versions
+already published on Hex. Concurrent runs for the same version are serialized.
+
 ## License
 
 This package is distributed under the Apache-2.0 license. The vendored IREE

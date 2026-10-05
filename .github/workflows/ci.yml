@@ -18,6 +18,8 @@ on:
       - ".github/scripts/**"
       - ".github/workflows/ci.yml"
       - ".github/workflows/parity-monitor.yml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-package.yml"
   pull_request:
     paths:
       - "**/*.ex"
@@ -34,6 +36,8 @@ on:
       - ".github/scripts/**"
       - ".github/workflows/ci.yml"
       - ".github/workflows/parity-monitor.yml"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-package.yml"
 
 jobs:
   parity-monitor-tests:
@@ -43,7 +47,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Run parity monitor lifecycle tests
+      - name: Run workflow helper tests
         run: python -m unittest discover -s .github/scripts -p 'test_*.py' -v
 
   format:
