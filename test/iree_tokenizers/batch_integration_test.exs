@@ -238,7 +238,8 @@ defmodule IREETokenizers.BatchIntegrationTest do
       "def f(x):\n    return [i**2 for i in range(x) if i % 2 == 0]\n"
     ]
 
-    tokenizer_json = System.get_env("QWEN38_TOKENIZER_JSON")
+    tokenizer_json =
+      System.get_env("MINICPM5_TOKENIZER_JSON") || System.get_env("QWEN38_TOKENIZER_JSON")
 
     {iree_tokenizer, hf_tokenizer} =
       if tokenizer_json do
