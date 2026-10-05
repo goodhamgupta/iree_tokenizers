@@ -759,6 +759,85 @@ defmodule IREETokenizers.CompatibilityTest do
     assert suffix_ids == Encoding.get_ids(iree_encoding)
   end
 
+  test "Metaspace preserves whitespace unless an explicit normalizer or WhitespaceSplit removes it" do
+    root =
+      fixture_path("unigram_sequence_normalizer_utf8.json") |> File.read!() |> Jason.decode!()
+
+    metaspace = root["pre_tokenizer"]
+
+    inputs = [
+      "日\v本",
+      "日\f本",
+      "日\t本",
+      "日\n本",
+      "日\r本",
+      "日\v\f本",
+      "日  本",
+      " 日 本  ",
+      "日\u00A0本",
+      "日\u2003本"
+    ]
+
+    for normalizer <- [nil, root["normalizer"]],
+        pre_tokenizer <- [
+          metaspace,
+          %{"type" => "Sequence", "pretokenizers" => [metaspace]},
+          %{
+            "type" => "Sequence",
+            "pretokenizers" => [%{"type" => "WhitespaceSplit"}, metaspace]
+          }
+        ] do
+      json =
+        root
+        |> Map.put("normalizer", normalizer)
+        |> Map.put("pre_tokenizer", pre_tokenizer)
+        |> Jason.encode!()
+
+      {:ok, iree_tokenizer} = Tokenizer.from_buffer(json)
+      {:ok, hf_tokenizer} = HFTokenizer.from_buffer(json)
+
+      for add_special_tokens <- [true, false] do
+        opts = [add_special_tokens: add_special_tokens]
+        {:ok, iree_batch} = Tokenizer.encode_batch(iree_tokenizer, inputs, opts)
+        {:ok, hf_batch} = HFTokenizer.encode_batch(hf_tokenizer, inputs, opts)
+
+        for {input, {iree_encoding, hf_encoding}} <-
+              Enum.zip(inputs, Enum.zip(iree_batch, hf_batch)) do
+          assert {:ok, ^iree_encoding} = Tokenizer.encode(iree_tokenizer, input, opts)
+          assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
+          assert iree_encoding.tokens == HFEncoding.get_tokens(hf_encoding)
+          assert iree_encoding.type_ids == HFEncoding.get_type_ids(hf_encoding)
+          assert iree_encoding.attention_mask == HFEncoding.get_attention_mask(hf_encoding)
+
+          assert iree_encoding.special_tokens_mask ==
+                   HFEncoding.get_special_tokens_mask(hf_encoding)
+
+          assert iree_encoding.offsets == nil
+
+          assert Tokenizer.decode(iree_tokenizer, iree_encoding.ids, skip_special_tokens: false) ==
+                   HFTokenizer.decode(hf_tokenizer, HFEncoding.get_ids(hf_encoding),
+                     skip_special_tokens: false
+                   )
+
+          {:ok, stream} = EncodeStream.new(iree_tokenizer, opts ++ [max_chunk_bytes: 1])
+
+          prefix_ids =
+            for <<byte <- input>>, reduce: [] do
+              ids ->
+                {:ok, chunk_ids} = EncodeStream.feed(stream, <<byte>>)
+                ids ++ chunk_ids
+            end
+
+          assert {:ok, suffix_ids} = EncodeStream.finalize(stream)
+          assert prefix_ids ++ suffix_ids == iree_encoding.ids
+
+          assert {:error, {:invalid_argument, "stream already finalized"}} =
+                   EncodeStream.finalize(stream)
+        end
+      end
+    end
+  end
+
   test "Sequence normalizer encodes long UTF-8 input across tile boundaries" do
     # Regression for the parity-monitor SIGABRT (run 26019404748). The vendored
     # Sequence normalizer tiled its input at a fixed 64-byte boundary that

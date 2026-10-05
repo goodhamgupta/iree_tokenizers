@@ -35,6 +35,89 @@ defmodule IREETokenizers.BatchIntegrationTest do
     assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
   end
 
+  test "distilbert removes non-tab control characters during Bert normalization" do
+    input = "bell\x07tab\ttab vertical\vform\ftab back\bspace"
+
+    {:ok, iree_tokenizer} = IREETokenizer.from_pretrained("distilbert/distilbert-base-uncased")
+    {:ok, hf_tokenizer} = HFTokenizer.from_pretrained("distilbert/distilbert-base-uncased")
+
+    for add_special_tokens <- [true, false] do
+      {:ok, iree_encoding} =
+        IREETokenizer.encode(iree_tokenizer, input, add_special_tokens: add_special_tokens)
+
+      {:ok, hf_encoding} =
+        HFTokenizer.encode(hf_tokenizer, input, add_special_tokens: add_special_tokens)
+
+      assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
+      assert iree_encoding.tokens == HFEncoding.get_tokens(hf_encoding)
+
+      assert {:ok, iree_decoded} = IREETokenizer.decode(iree_tokenizer, iree_encoding.ids)
+      assert {:ok, hf_decoded} = HFTokenizer.decode(hf_tokenizer, HFEncoding.get_ids(hf_encoding))
+      assert iree_decoded == hf_decoded
+
+      {:ok, [iree_batch_encoding]} =
+        IREETokenizer.encode_batch(iree_tokenizer, [input],
+          add_special_tokens: add_special_tokens
+        )
+
+      {:ok, [hf_batch_encoding]} =
+        HFTokenizer.encode_batch(hf_tokenizer, [input], add_special_tokens: add_special_tokens)
+
+      assert iree_batch_encoding.ids == HFEncoding.get_ids(hf_batch_encoding)
+    end
+  end
+
+  test "GLiNER Metaspace preserves isolated control characters" do
+    {iree_tokenizer, hf_tokenizer} =
+      case System.get_env("GLINER_TOKENIZER_JSON") do
+        nil ->
+          {:ok, iree} = IREETokenizer.from_pretrained("fastino/gliner2.5-multi-v1")
+          {:ok, hf} = HFTokenizer.from_pretrained("fastino/gliner2.5-multi-v1")
+          {iree, hf}
+
+        path ->
+          {:ok, iree} = IREETokenizer.from_file(path)
+          {:ok, hf} = HFTokenizer.from_file(path)
+          {iree, hf}
+      end
+
+    inputs = [
+      "bell\x07tab\ttab vertical\vform\ftab back\bspace",
+      "vertical\vform\ftab",
+      "vertical\v\fform\t tab"
+    ]
+
+    for add_special_tokens <- [true, false] do
+      opts = [add_special_tokens: add_special_tokens]
+      {:ok, iree_batch} = IREETokenizer.encode_batch(iree_tokenizer, inputs, opts)
+      {:ok, hf_batch} = HFTokenizer.encode_batch(hf_tokenizer, inputs, opts)
+
+      for {input, {iree_encoding, hf_encoding}} <-
+            Enum.zip(inputs, Enum.zip(iree_batch, hf_batch)) do
+        assert {:ok, ^iree_encoding} = IREETokenizer.encode(iree_tokenizer, input, opts)
+        assert iree_encoding.ids == HFEncoding.get_ids(hf_encoding)
+        assert iree_encoding.tokens == HFEncoding.get_tokens(hf_encoding)
+
+        assert IREETokenizer.decode(iree_tokenizer, iree_encoding.ids, skip_special_tokens: false) ==
+                 HFTokenizer.decode(hf_tokenizer, HFEncoding.get_ids(hf_encoding),
+                   skip_special_tokens: false
+                 )
+
+        {:ok, stream} = EncodeStream.new(iree_tokenizer, opts ++ [max_chunk_bytes: 1])
+
+        prefix_ids =
+          for <<byte <- input>>, reduce: [] do
+            ids ->
+              {:ok, chunk_ids} = EncodeStream.feed(stream, <<byte>>)
+              ids ++ chunk_ids
+          end
+
+        assert {:ok, suffix_ids} = EncodeStream.finalize(stream)
+        assert prefix_ids ++ suffix_ids == iree_encoding.ids
+      end
+    end
+  end
+
   test "bert batch encode matches per-item Hugging Face parity on emoji regression corpus" do
     inputs = [
       "Hello, world!",
@@ -249,7 +332,8 @@ defmodule IREETokenizers.BatchIntegrationTest do
       "def f(x):\n    return [i**2 for i in range(x) if i % 2 == 0]\n"
     ]
 
-    tokenizer_json = System.get_env("QWEN38_TOKENIZER_JSON")
+    tokenizer_json =
+      System.get_env("MINICPM5_TOKENIZER_JSON") || System.get_env("QWEN38_TOKENIZER_JSON")
 
     {iree_tokenizer, hf_tokenizer} =
       if tokenizer_json do
