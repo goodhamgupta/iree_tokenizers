@@ -1,0 +1,61 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [],
+  "normalizer": null,
+  "pre_tokenizer": {
+    "type": "Sequence",
+    "pretokenizers": [
+      {
+        "type": "Split",
+        "pattern": {
+          "Regex": "(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\\r\\n\\p{L}\\p{N}]?\\p{L}+|\\p{N}{1}| ?[^\\s\\p{L}\\p{N}]+[\\r\\n]*|\\s*[\\r\\n]+|\\s+(?!\\S)|\\s+"
+        },
+        "behavior": "Isolated",
+        "invert": false
+      },
+      {
+        "type": "ByteLevel",
+        "add_prefix_space": false,
+        "trim_offsets": true,
+        "use_regex": false
+      }
+    ]
+  },
+  "post_processor": {
+    "type": "ByteLevel",
+    "add_prefix_space": true,
+    "trim_offsets": false,
+    "use_regex": true
+  },
+  "decoder": {
+    "type": "ByteLevel",
+    "add_prefix_space": true,
+    "trim_offsets": true,
+    "use_regex": true
+  },
+  "model": {
+    "type": "BPE",
+    "vocab": {
+      "a": 0,
+      "1": 1,
+      "Ġ": 2,
+      "Ċ": 3,
+      "ĉ": 4,
+      "!": 5,
+      "Ġa": 6,
+      "ĠĠ": 7,
+      "ĠĠĠ": 8,
+      "ĠĠĠĠ": 9,
+      "ĉĉ": 10
+    },
+    "merges": [
+      "Ġ a",
+      "Ġ Ġ",
+      "ĠĠ Ġ",
+      "ĠĠ ĠĠ",
+      "ĉ ĉ"
+    ]
+  }
+}

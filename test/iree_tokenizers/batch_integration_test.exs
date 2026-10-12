@@ -14,6 +14,68 @@ defmodule IREETokenizers.BatchIntegrationTest do
                    "set RUN_PRETRAINED_BATCH_INTEGRATION=1 to run pretrained batch integration tests"
                )
 
+  @tag skip:
+         if(System.get_env("KOLIBRI_TOKENIZER_JSON"),
+           do: false,
+           else: "set KOLIBRI_TOKENIZER_JSON to run the Kolibri regression"
+         )
+  test "Kolibri pretrained whitespace keeps one-shot, batch, and stream parity" do
+    fixture = System.fetch_env!("KOLIBRI_TOKENIZER_JSON")
+    {:ok, tokenizer} = IREETokenizer.from_file(fixture)
+    {:ok, reference} = HFTokenizer.from_file(fixture)
+
+    inputs = [
+      "   leading\t\ttabs\n\nnewlines   trailing   ",
+      "def f(x):\n    return [i**2 for i in range(x) if i % 2 == 0]\n",
+      "a   ",
+      "   ",
+      "a\t\ta",
+      "a   111"
+    ]
+
+    for special <- [true, false] do
+      for input <- inputs do
+        {:ok, actual} =
+          IREETokenizer.encode(tokenizer, input, add_special_tokens: special, track_offsets: true)
+
+        {:ok, expected} = HFTokenizer.encode(reference, input, add_special_tokens: special)
+        assert actual.ids == HFEncoding.get_ids(expected)
+        assert actual.tokens == HFEncoding.get_tokens(expected)
+        assert actual.offsets == HFEncoding.get_offsets(expected)
+        assert actual.type_ids == HFEncoding.get_type_ids(expected)
+        assert actual.attention_mask == HFEncoding.get_attention_mask(expected)
+        assert actual.special_tokens_mask == HFEncoding.get_special_tokens_mask(expected)
+
+        assert IREETokenizer.decode(tokenizer, actual.ids) ==
+                 HFTokenizer.decode(reference, actual.ids)
+
+        {:ok, stream} =
+          EncodeStream.new(tokenizer, add_special_tokens: special, max_chunk_bytes: 1)
+
+        prefix =
+          for <<byte <- input>>, reduce: [] do
+            ids ->
+              {:ok, chunk} = EncodeStream.feed(stream, <<byte>>)
+              ids ++ chunk
+          end
+
+        assert {:ok, suffix} = EncodeStream.finalize(stream)
+        assert prefix ++ suffix == actual.ids
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.finalize(stream)
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.feed(stream, " ")
+      end
+
+      {:ok, actual} = IREETokenizer.encode_batch(tokenizer, inputs, add_special_tokens: special)
+      {:ok, expected} = HFTokenizer.encode_batch(reference, inputs, add_special_tokens: special)
+      assert Enum.map(actual, & &1.ids) == Enum.map(expected, &HFEncoding.get_ids/1)
+      assert Enum.all?(actual, &is_nil(&1.offsets))
+    end
+  end
+
   test "gpt2 batch encode matches per-item Hugging Face parity on mixed-length inputs" do
     inputs = harness_batch_inputs()
 
