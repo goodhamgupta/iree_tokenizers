@@ -14,6 +14,46 @@ defmodule IREETokenizers.BatchIntegrationTest do
                    "set RUN_PRETRAINED_BATCH_INTEGRATION=1 to run pretrained batch integration tests"
                )
 
+  test "Mellum Digits ByteLevel handles long inputs and streaming" do
+    {iree, hf} =
+      case System.get_env("MELLUM_TOKENIZER_JSON") do
+        nil ->
+          {:ok, iree} = IREETokenizer.from_pretrained("JetBrains/Mellum2.1-12B-A2.5B-Thinking")
+          {:ok, hf} = HFTokenizer.from_pretrained("JetBrains/Mellum2.1-12B-A2.5B-Thinking")
+          {iree, hf}
+
+        path ->
+          {:ok, iree} = IREETokenizer.from_file(path)
+          {:ok, hf} = HFTokenizer.from_file(path)
+          {iree, hf}
+      end
+
+    inputs = harness_batch_inputs()
+
+    for special <- [true, false] do
+      opts = [add_special_tokens: special]
+      {:ok, actual} = IREETokenizer.encode_batch(iree, inputs, opts)
+      {:ok, expected} = HFTokenizer.encode_batch(hf, inputs, opts)
+
+      for {input, {a, e}} <- Enum.zip(inputs, Enum.zip(actual, expected)) do
+        assert a.ids == HFEncoding.get_ids(e)
+        assert a.tokens == HFEncoding.get_tokens(e)
+        assert a.type_ids == HFEncoding.get_type_ids(e)
+        assert IREETokenizer.decode(iree, a.ids) == HFTokenizer.decode(hf, a.ids)
+        {:ok, stream} = EncodeStream.new(iree, add_special_tokens: special, max_chunk_bytes: 4096)
+        split = div(byte_size(input), 2)
+        <<head::binary-size(split), tail::binary>> = input
+        {:ok, first} = EncodeStream.feed(stream, head)
+        {:ok, second} = EncodeStream.feed(stream, tail)
+        {:ok, last} = EncodeStream.finalize(stream)
+        assert first ++ second ++ last == a.ids
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.finalize(stream)
+      end
+    end
+  end
+
   test "gpt2 batch encode matches per-item Hugging Face parity on mixed-length inputs" do
     inputs = harness_batch_inputs()
 
