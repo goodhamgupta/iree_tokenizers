@@ -1463,6 +1463,8 @@ const MINICPM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|
 const GLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 const PHONELLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
+const LING_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+";
+
 fn rewrite_gpt_whitespace_fallback(pattern: &str) -> Option<String> {
     const TRAILING_WHITESPACE_FALLBACK: &str = r"|\s+";
 
@@ -1471,6 +1473,7 @@ fn rewrite_gpt_whitespace_fallback(pattern: &str) -> Option<String> {
         || pattern == MINICPM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
         || pattern == GLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
         || pattern == PHONELLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
+        || pattern == LING_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
     {
         pattern
             .strip_suffix(TRAILING_WHITESPACE_FALLBACK)
@@ -1685,6 +1688,16 @@ mod sanitize_tests {
         assert_eq!(
             out,
             r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)"
+        );
+    }
+
+    #[test]
+    fn drops_ling_gpt_whitespace_fallback_for_bytelevel_split_parity() {
+        let out =
+            rewrite_split_regex(LING_GPT_SPLIT_WITH_WHITESPACE_FALLBACK).expect("expected rewrite");
+        assert_eq!(
+            out,
+            r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)"
         );
     }
 

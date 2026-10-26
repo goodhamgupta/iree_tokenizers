@@ -14,6 +14,38 @@ defmodule IREETokenizers.BatchIntegrationTest do
                    "set RUN_PRETRAINED_BATCH_INTEGRATION=1 to run pretrained batch integration tests"
                )
 
+  test "Ling whitespace and code match Hugging Face in both special-token modes" do
+    path = System.get_env("LING_TOKENIZER_JSON")
+
+    {:ok, tokenizer} =
+      if path,
+        do: IREETokenizer.from_file(path),
+        else: IREETokenizer.from_pretrained("inclusionAI/Ling-3.1-flash")
+
+    {:ok, reference} =
+      if path,
+        do: HFTokenizer.from_file(path),
+        else: HFTokenizer.from_pretrained("inclusionAI/Ling-3.1-flash")
+
+    inputs = harness_batch_inputs()
+
+    for special <- [true, false] do
+      for input <- inputs do
+        {:ok, actual} = IREETokenizer.encode(tokenizer, input, add_special_tokens: special)
+        {:ok, expected} = HFTokenizer.encode(reference, input, add_special_tokens: special)
+        assert actual.ids == HFEncoding.get_ids(expected)
+        assert actual.tokens == HFEncoding.get_tokens(expected)
+
+        assert IREETokenizer.decode(tokenizer, actual.ids) ==
+                 HFTokenizer.decode(reference, actual.ids)
+      end
+
+      {:ok, actual} = IREETokenizer.encode_batch(tokenizer, inputs, add_special_tokens: special)
+      {:ok, expected} = HFTokenizer.encode_batch(reference, inputs, add_special_tokens: special)
+      assert Enum.map(actual, & &1.ids) == Enum.map(expected, &HFEncoding.get_ids/1)
+    end
+  end
+
   test "gpt2 batch encode matches per-item Hugging Face parity on mixed-length inputs" do
     inputs = harness_batch_inputs()
 
