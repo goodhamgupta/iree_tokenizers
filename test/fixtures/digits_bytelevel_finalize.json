@@ -1,0 +1,85 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [],
+  "normalizer": null,
+  "pre_tokenizer": {
+    "type": "Sequence",
+    "pretokenizers": [
+      {
+        "type": "Digits",
+        "individual_digits": true
+      },
+      {
+        "type": "ByteLevel",
+        "add_prefix_space": false,
+        "trim_offsets": true,
+        "use_regex": true
+      }
+    ]
+  },
+  "post_processor": {
+    "type": "ByteLevel",
+    "add_prefix_space": true,
+    "trim_offsets": false,
+    "use_regex": true
+  },
+  "decoder": {
+    "type": "ByteLevel",
+    "add_prefix_space": true,
+    "trim_offsets": true,
+    "use_regex": true
+  },
+  "model": {
+    "type": "BPE",
+    "dropout": null,
+    "unk_token": null,
+    "continuing_subword_prefix": null,
+    "end_of_word_suffix": null,
+    "fuse_unk": false,
+    "byte_fallback": false,
+    "ignore_merges": false,
+    "vocab": {
+      "a": 0,
+      "b": 1,
+      "c": 2,
+      "d": 3,
+      "e": 4,
+      "f": 5,
+      "g": 6,
+      "h": 7,
+      "i": 8,
+      "j": 9,
+      "k": 10,
+      "l": 11,
+      "m": 12,
+      "n": 13,
+      "o": 14,
+      "p": 15,
+      "q": 16,
+      "r": 17,
+      "s": 18,
+      "t": 19,
+      "u": 20,
+      "v": 21,
+      "w": 22,
+      "x": 23,
+      "y": 24,
+      "z": 25,
+      ".": 26,
+      "0": 27,
+      "1": 28,
+      "2": 29,
+      "3": 30,
+      "4": 31,
+      "5": 32,
+      "6": 33,
+      "7": 34,
+      "8": 35,
+      "9": 36,
+      "Ġ": 37
+    },
+    "merges": []
+  }
+}

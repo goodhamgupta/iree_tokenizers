@@ -1090,6 +1090,7 @@ fn infer_stream_encode_strategy(root: &Value) -> StreamEncodeStrategy {
         Some("Unigram") => StreamEncodeStrategy::BufferedFinalize,
         Some("BPE")
             if is_exact_byte_level_bpe_candidate(root)
+                || has_digits_byte_level_sequence(root)
                 || root.get("pre_tokenizer").is_none()
                 || root.get("pre_tokenizer") == Some(&Value::Null)
                 || has_right_aligned_digit_split_pre_tokenizer(root)
@@ -1100,6 +1101,23 @@ fn infer_stream_encode_strategy(root: &Value) -> StreamEncodeStrategy {
         }
         _ => StreamEncodeStrategy::Native,
     }
+}
+
+// Digits can retain an arbitrarily long non-digit parent segment. Keep it
+// intact until EOF rather than letting native stream ring boundaries split it.
+fn has_digits_byte_level_sequence(root: &Value) -> bool {
+    let Some(pre) = root.get("pre_tokenizer") else {
+        return false;
+    };
+    pre.get("type").and_then(Value::as_str) == Some("Sequence")
+        && pre
+            .get("pretokenizers")
+            .and_then(Value::as_array)
+            .is_some_and(|children| {
+                children.len() == 2
+                    && children[0].get("type").and_then(Value::as_str) == Some("Digits")
+                    && children[1].get("type").and_then(Value::as_str) == Some("ByteLevel")
+            })
 }
 
 fn has_end_anchored_regex_normalizer(root: &Value) -> bool {
