@@ -1463,6 +1463,9 @@ const MINICPM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|
 const GLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 const PHONELLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
+// Flint adds optional contractions to the two Unicode case branches.
+const FLINT_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?| ?[\p{P}\p{S}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+
 fn rewrite_gpt_whitespace_fallback(pattern: &str) -> Option<String> {
     const TRAILING_WHITESPACE_FALLBACK: &str = r"|\s+";
 
@@ -1471,6 +1474,7 @@ fn rewrite_gpt_whitespace_fallback(pattern: &str) -> Option<String> {
         || pattern == MINICPM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
         || pattern == GLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
         || pattern == PHONELLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
+        || pattern == FLINT_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
     {
         pattern
             .strip_suffix(TRAILING_WHITESPACE_FALLBACK)
@@ -1624,6 +1628,19 @@ fn prefix_makes_lookahead_redundant(prefix: &str, body: &str) -> bool {
 
 #[cfg(test)]
 mod sanitize_tests {
+    #[test]
+    fn rewrites_flint_whitespace_fallback() {
+        let pattern = super::FLINT_GPT_SPLIT_WITH_WHITESPACE_FALLBACK;
+        assert_eq!(
+            super::rewrite_split_regex(pattern),
+            Some(pattern.strip_suffix(r"|\s+").unwrap().to_owned())
+        );
+        assert!(
+            super::rewrite_split_regex(&pattern.replace("(?i:'s|'t|'re|'ve|'m|'ll|'d)?", ""))
+                .is_none()
+        );
+    }
+
     use super::*;
 
     #[test]
