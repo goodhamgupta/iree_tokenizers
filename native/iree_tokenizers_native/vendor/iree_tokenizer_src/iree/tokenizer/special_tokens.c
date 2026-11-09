@@ -153,25 +153,51 @@ static int iree_tokenizer_special_tokens_compare_entries(
   }
 
   // Tertiary: lexicographic for determinism.
-  return memcmp(string_data + ea->string_offset,
-                string_data + eb->string_offset, ea->string_length);
+  int comparison = memcmp(string_data + ea->string_offset,
+                          string_data + eb->string_offset, ea->string_length);
+  if (comparison != 0) return comparison;
+  // Preserve insertion order for duplicate contents, as the former stable
+  // insertion sort did. String offsets increase with each builder entry.
+  return (ea->string_offset > eb->string_offset) -
+         (ea->string_offset < eb->string_offset);
 }
 
-// Thread-safe insertion sort with explicit context. Uses O(n²) insertion sort
-// which is fast for small arrays (special tokens are typically <1000 entries).
-// Avoids qsort global variable thread safety issues.
+// Restore the max heap rooted at |root|, using explicit string-table context.
+static void iree_tokenizer_special_tokens_sift_down(
+    iree_tokenizer_special_tokens_builder_entry_t* entries,
+    iree_host_size_t count, iree_host_size_t root, const uint8_t* string_data) {
+  while (root < count / 2) {
+    iree_host_size_t child = root * 2 + 1;
+    if (child + 1 < count &&
+        iree_tokenizer_special_tokens_compare_entries(
+            &entries[child], &entries[child + 1], string_data) < 0) {
+      ++child;
+    }
+    if (iree_tokenizer_special_tokens_compare_entries(
+            &entries[root], &entries[child], string_data) >= 0) {
+      return;
+    }
+    iree_tokenizer_special_tokens_builder_entry_t temporary = entries[root];
+    entries[root] = entries[child];
+    entries[child] = temporary;
+    root = child;
+  }
+}
+
+// In-place O(n log n) heapsort supports large added-token vocabularies without
+// allocating scratch space or using global comparator context.
 static void iree_tokenizer_special_tokens_sort_entries(
     iree_tokenizer_special_tokens_builder_entry_t* entries,
     iree_host_size_t entry_count, const uint8_t* string_data) {
-  for (iree_host_size_t i = 1; i < entry_count; ++i) {
-    iree_tokenizer_special_tokens_builder_entry_t key = entries[i];
-    iree_host_size_t j = i;
-    while (j > 0 && iree_tokenizer_special_tokens_compare_entries(
-                        &key, &entries[j - 1], string_data) < 0) {
-      entries[j] = entries[j - 1];
-      --j;
-    }
-    entries[j] = key;
+  for (iree_host_size_t i = entry_count / 2; i > 0; --i) {
+    iree_tokenizer_special_tokens_sift_down(entries, entry_count, i - 1,
+                                           string_data);
+  }
+  for (iree_host_size_t end = entry_count; end > 1; --end) {
+    iree_tokenizer_special_tokens_builder_entry_t temporary = entries[0];
+    entries[0] = entries[end - 1];
+    entries[end - 1] = temporary;
+    iree_tokenizer_special_tokens_sift_down(entries, end - 1, 0, string_data);
   }
 }
 
@@ -219,17 +245,17 @@ iree_status_t iree_tokenizer_special_tokens_builder_build(
     return iree_ok_status();
   }
 
-  // Validate entry count fits in uint16_t (bucket start/end indices).
-  if (builder->entry_count > UINT16_MAX) {
+  // Validate entry count fits in uint32_t (bucket start/end indices).
+  if (builder->entry_count > UINT32_MAX) {
     return iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
                             "too many special tokens: %" PRIhsz " > %u",
-                            builder->entry_count, (unsigned)UINT16_MAX);
+                            builder->entry_count, (unsigned)UINT32_MAX);
   }
 
   IREE_TRACE_ZONE_BEGIN(z0);
 
   // Sort entries by first byte, then by length descending.
-  // Uses thread-safe insertion sort with explicit context (no global variable).
+  // Uses thread-safe heapsort with explicit context (no global variable).
   iree_tokenizer_special_tokens_sort_entries(
       builder->entries, builder->entry_count, builder->string_data);
 
@@ -261,6 +287,12 @@ iree_status_t iree_tokenizer_special_tokens_builder_build(
     }
     if (length < min_length) min_length = length;
     if (length > max_length) max_length = length;
+  }
+
+  if (bstring_data_size > UINT32_MAX) {
+    IREE_RETURN_AND_END_ZONE(z0,
+        iree_make_status(IREE_STATUS_RESOURCE_EXHAUSTED,
+                         "B-string data exceeds uint32_t offsets"));
   }
 
   // Calculate slab layout: [ids][flags][bstring_offsets][bstring_data].
@@ -336,8 +368,8 @@ iree_status_t iree_tokenizer_special_tokens_builder_build(
     // Populate bucket metadata.
     memcpy(bucket->prefix, first_content, prefix_length);
     bucket->prefix_length = (uint8_t)prefix_length;
-    bucket->start = (uint16_t)bucket_start;
-    bucket->end = (uint16_t)bucket_end;
+    bucket->start = (uint32_t)bucket_start;
+    bucket->end = (uint32_t)bucket_end;
 
     // Set first-byte index.
     out_special_tokens->first_byte_to_bucket[first_byte] = built_bucket_count;
@@ -475,9 +507,9 @@ iree_tokenizer_special_tokens_match(
     iree_host_size_t total_matched = state->match_position + input.size;
 
     // Scan all tokens in bucket to find matches at current position.
-    uint16_t need_more_token_index = 0;
+    uint32_t need_more_token_index = 0;
     bool need_more = false;
-    for (uint16_t i = bucket->start; i < bucket->end; ++i) {
+    for (uint32_t i = bucket->start; i < bucket->end; ++i) {
       const uint8_t* bstring =
           iree_tokenizer_special_tokens_get_bstring(special_tokens, i);
       uint8_t token_length = bstring[0];
@@ -556,9 +588,9 @@ iree_tokenizer_special_tokens_match(
   }
 
   // Scan bucket tokens (sorted by length descending).
-  uint16_t need_more_token_index = 0;
+  uint32_t need_more_token_index = 0;
   bool need_more = false;
-  for (uint16_t i = bucket->start; i < bucket->end; ++i) {
+  for (uint32_t i = bucket->start; i < bucket->end; ++i) {
     const uint8_t* bstring =
         iree_tokenizer_special_tokens_get_bstring(special_tokens, i);
     uint8_t token_length = bstring[0];

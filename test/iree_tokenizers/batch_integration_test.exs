@@ -14,6 +14,44 @@ defmodule IREETokenizers.BatchIntegrationTest do
                    "set RUN_PRETRAINED_BATCH_INTEGRATION=1 to run pretrained batch integration tests"
                )
 
+  @tag timeout: 600_000
+  test "Qwenputer loads a large added-token table and preserves parity" do
+    {tokenizer, reference} =
+      case System.get_env("QWENPUTER_TOKENIZER_JSON") do
+        nil ->
+          {:ok, tokenizer} = IREETokenizer.from_pretrained("divagr1925/Qwen3.5-4B-Qwenputer")
+          {:ok, reference} = HFTokenizer.from_pretrained("divagr1925/Qwen3.5-4B-Qwenputer")
+          {tokenizer, reference}
+
+        path ->
+          {:ok, tokenizer} = IREETokenizer.from_file(path)
+          {:ok, reference} = HFTokenizer.from_file(path)
+          {tokenizer, reference}
+      end
+
+    inputs = ["Hello world", "日本語 🚀 café", "<|rv:GO|>", "<|rv:SC|>", "Hello <|im_start|> world"]
+
+    for special <- [true, false] do
+      for input <- inputs do
+        {:ok, actual} = IREETokenizer.encode(tokenizer, input, add_special_tokens: special)
+        {:ok, expected} = HFTokenizer.encode(reference, input, add_special_tokens: special)
+        assert actual.ids == HFEncoding.get_ids(expected)
+        assert actual.tokens == HFEncoding.get_tokens(expected)
+        assert actual.type_ids == HFEncoding.get_type_ids(expected)
+        assert actual.attention_mask == HFEncoding.get_attention_mask(expected)
+
+        for skip <- [true, false] do
+          assert IREETokenizer.decode(tokenizer, actual.ids, skip_special_tokens: skip) ==
+                   HFTokenizer.decode(reference, actual.ids, skip_special_tokens: skip)
+        end
+      end
+
+      {:ok, actual} = IREETokenizer.encode_batch(tokenizer, inputs, add_special_tokens: special)
+      {:ok, expected} = HFTokenizer.encode_batch(reference, inputs, add_special_tokens: special)
+      assert Enum.map(actual, & &1.ids) == Enum.map(expected, &HFEncoding.get_ids/1)
+    end
+  end
+
   test "gpt2 batch encode matches per-item Hugging Face parity on mixed-length inputs" do
     inputs = harness_batch_inputs()
 
