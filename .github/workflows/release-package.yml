@@ -49,7 +49,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
           - runner: macos-15-intel
             target: x86_64-apple-darwin
-          - runner: macos-14
+          - runner: macos-15
             target: aarch64-apple-darwin
     runs-on: ${{ matrix.runner }}
     env:
@@ -63,6 +63,9 @@ jobs:
           elixir-version: "1.19.5"
           otp-version: "28.1.1"
       - uses: dtolnay/rust-toolchain@stable
+      - name: Preserve Apple Silicon deployment target
+        if: matrix.target == 'aarch64-apple-darwin'
+        run: echo "MACOSX_DEPLOYMENT_TARGET=14.0" >> "$GITHUB_ENV"
       - name: Fetch deps
         run: mix deps.get
       - name: Build NIF
