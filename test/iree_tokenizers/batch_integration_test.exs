@@ -146,6 +146,23 @@ defmodule IREETokenizers.BatchIntegrationTest do
     end
   end
 
+  test "Flint whitespace matches Hugging Face on the mixed-length corpus" do
+    {iree, hf} =
+      case System.get_env("FLINT_TOKENIZER_JSON") do
+        nil ->
+          {:ok, iree} = IREETokenizer.from_pretrained("RecursiveSI/flint")
+          {:ok, hf} = HFTokenizer.from_pretrained("RecursiveSI/flint")
+          {iree, hf}
+
+        path ->
+          {:ok, iree} = IREETokenizer.from_file(path)
+          {:ok, hf} = HFTokenizer.from_file(path)
+          {iree, hf}
+      end
+
+    assert_batch_encoding_parity(iree, hf, harness_batch_inputs())
+  end
+
   test "gpt2 batch encode matches per-item Hugging Face parity on mixed-length inputs" do
     inputs = harness_batch_inputs()
 
