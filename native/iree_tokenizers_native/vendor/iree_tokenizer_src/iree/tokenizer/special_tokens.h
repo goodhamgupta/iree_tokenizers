@@ -81,9 +81,9 @@ typedef struct iree_tokenizer_special_tokens_bucket_t {
   // Number of prefix bytes to check (1-4).
   uint8_t prefix_length;
   // First token index in this bucket.
-  uint16_t start;
+  uint32_t start;
   // One past last token index.
-  uint16_t end;
+  uint32_t end;
 } iree_tokenizer_special_tokens_bucket_t;
 
 // Special tokens collection with two-level prefix index.
@@ -315,7 +315,7 @@ typedef struct iree_tokenizer_special_tokens_encode_state_t {
   // if the match ultimately fails. This is NOT just the first token in the
   // bucket - different tokens in a bucket can have different content after
   // the shared prefix.
-  uint16_t partial_token_index;
+  uint32_t partial_token_index;
 
   // Drain position: how many bytes of the partial match have been drained.
   // Used during NO_MATCH recovery to emit bytes in correct order.

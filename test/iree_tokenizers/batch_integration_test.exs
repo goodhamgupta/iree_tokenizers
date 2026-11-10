@@ -14,6 +14,213 @@ defmodule IREETokenizers.BatchIntegrationTest do
                    "set RUN_PRETRAINED_BATCH_INTEGRATION=1 to run pretrained batch integration tests"
                )
 
+  @tag timeout: 600_000
+  test "Qwenputer loads a large added-token table and preserves parity" do
+    {tokenizer, reference} =
+      case System.get_env("QWENPUTER_TOKENIZER_JSON") do
+        nil ->
+          {:ok, tokenizer} = IREETokenizer.from_pretrained("divagr1925/Qwen3.5-4B-Qwenputer")
+          {:ok, reference} = HFTokenizer.from_pretrained("divagr1925/Qwen3.5-4B-Qwenputer")
+          {tokenizer, reference}
+
+        path ->
+          {:ok, tokenizer} = IREETokenizer.from_file(path)
+          {:ok, reference} = HFTokenizer.from_file(path)
+          {tokenizer, reference}
+      end
+
+    inputs = ["Hello world", "日本語 🚀 café", "<|rv:GO|>", "<|rv:SC|>", "Hello <|im_start|> world"]
+
+    for special <- [true, false] do
+      for input <- inputs do
+        {:ok, actual} = IREETokenizer.encode(tokenizer, input, add_special_tokens: special)
+        {:ok, expected} = HFTokenizer.encode(reference, input, add_special_tokens: special)
+        assert actual.ids == HFEncoding.get_ids(expected)
+        assert actual.tokens == HFEncoding.get_tokens(expected)
+        assert actual.type_ids == HFEncoding.get_type_ids(expected)
+        assert actual.attention_mask == HFEncoding.get_attention_mask(expected)
+
+        for skip <- [true, false] do
+          assert IREETokenizer.decode(tokenizer, actual.ids, skip_special_tokens: skip) ==
+                   HFTokenizer.decode(reference, actual.ids, skip_special_tokens: skip)
+        end
+      end
+
+      {:ok, actual} = IREETokenizer.encode_batch(tokenizer, inputs, add_special_tokens: special)
+      {:ok, expected} = HFTokenizer.encode_batch(reference, inputs, add_special_tokens: special)
+      assert Enum.map(actual, & &1.ids) == Enum.map(expected, &HFEncoding.get_ids/1)
+    end
+  end
+
+  @tag skip:
+         if(System.get_env("KOLIBRI_TOKENIZER_JSON"),
+           do: false,
+           else: "set KOLIBRI_TOKENIZER_JSON to run the Kolibri regression"
+         )
+  test "Kolibri pretrained whitespace keeps one-shot, batch, and stream parity" do
+    fixture = System.fetch_env!("KOLIBRI_TOKENIZER_JSON")
+    {:ok, tokenizer} = IREETokenizer.from_file(fixture)
+    {:ok, reference} = HFTokenizer.from_file(fixture)
+
+    inputs = [
+      "   leading\t\ttabs\n\nnewlines   trailing   ",
+      "def f(x):\n    return [i**2 for i in range(x) if i % 2 == 0]\n",
+      "a   ",
+      "   ",
+      "a\t\ta",
+      "a   111"
+    ]
+
+    for special <- [true, false] do
+      for input <- inputs do
+        {:ok, actual} =
+          IREETokenizer.encode(tokenizer, input, add_special_tokens: special, track_offsets: true)
+
+        {:ok, expected} = HFTokenizer.encode(reference, input, add_special_tokens: special)
+        assert actual.ids == HFEncoding.get_ids(expected)
+        assert actual.tokens == HFEncoding.get_tokens(expected)
+        assert actual.offsets == HFEncoding.get_offsets(expected)
+        assert actual.type_ids == HFEncoding.get_type_ids(expected)
+        assert actual.attention_mask == HFEncoding.get_attention_mask(expected)
+        assert actual.special_tokens_mask == HFEncoding.get_special_tokens_mask(expected)
+
+        assert IREETokenizer.decode(tokenizer, actual.ids) ==
+                 HFTokenizer.decode(reference, actual.ids)
+
+        {:ok, stream} =
+          EncodeStream.new(tokenizer, add_special_tokens: special, max_chunk_bytes: 1)
+
+        prefix =
+          for <<byte <- input>>, reduce: [] do
+            ids ->
+              {:ok, chunk} = EncodeStream.feed(stream, <<byte>>)
+              ids ++ chunk
+          end
+
+        assert {:ok, suffix} = EncodeStream.finalize(stream)
+        assert prefix ++ suffix == actual.ids
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.finalize(stream)
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.feed(stream, " ")
+      end
+
+      {:ok, actual} = IREETokenizer.encode_batch(tokenizer, inputs, add_special_tokens: special)
+      {:ok, expected} = HFTokenizer.encode_batch(reference, inputs, add_special_tokens: special)
+      assert Enum.map(actual, & &1.ids) == Enum.map(expected, &HFEncoding.get_ids/1)
+      assert Enum.all?(actual, &is_nil(&1.offsets))
+    end
+  end
+
+  test "Ling whitespace and code match Hugging Face in both special-token modes" do
+    path = System.get_env("LING_TOKENIZER_JSON")
+
+    {:ok, tokenizer} =
+      if path,
+        do: IREETokenizer.from_file(path),
+        else: IREETokenizer.from_pretrained("inclusionAI/Ling-3.1-flash")
+
+    {:ok, reference} =
+      if path,
+        do: HFTokenizer.from_file(path),
+        else: HFTokenizer.from_pretrained("inclusionAI/Ling-3.1-flash")
+
+    inputs = harness_batch_inputs()
+
+    for special <- [true, false] do
+      for input <- inputs do
+        {:ok, actual} = IREETokenizer.encode(tokenizer, input, add_special_tokens: special)
+        {:ok, expected} = HFTokenizer.encode(reference, input, add_special_tokens: special)
+        assert actual.ids == HFEncoding.get_ids(expected)
+        assert actual.tokens == HFEncoding.get_tokens(expected)
+
+        assert IREETokenizer.decode(tokenizer, actual.ids) ==
+                 HFTokenizer.decode(reference, actual.ids)
+      end
+
+      {:ok, actual} = IREETokenizer.encode_batch(tokenizer, inputs, add_special_tokens: special)
+      {:ok, expected} = HFTokenizer.encode_batch(reference, inputs, add_special_tokens: special)
+      assert Enum.map(actual, & &1.ids) == Enum.map(expected, &HFEncoding.get_ids/1)
+    end
+  end
+
+  test "Flint whitespace matches Hugging Face on the mixed-length corpus" do
+    {iree, hf} =
+      case System.get_env("FLINT_TOKENIZER_JSON") do
+        nil ->
+          {:ok, iree} = IREETokenizer.from_pretrained("RecursiveSI/flint")
+          {:ok, hf} = HFTokenizer.from_pretrained("RecursiveSI/flint")
+          {iree, hf}
+
+        path ->
+          {:ok, iree} = IREETokenizer.from_file(path)
+          {:ok, hf} = HFTokenizer.from_file(path)
+          {iree, hf}
+      end
+
+    assert_batch_encoding_parity(iree, hf, harness_batch_inputs())
+  end
+
+  test "Mellum Digits ByteLevel handles long inputs and streaming" do
+    {iree, hf} =
+      case System.get_env("MELLUM_TOKENIZER_JSON") do
+        nil ->
+          {:ok, iree} = IREETokenizer.from_pretrained("JetBrains/Mellum2.1-12B-A2.5B-Thinking")
+          {:ok, hf} = HFTokenizer.from_pretrained("JetBrains/Mellum2.1-12B-A2.5B-Thinking")
+          {iree, hf}
+
+        path ->
+          {:ok, iree} = IREETokenizer.from_file(path)
+          {:ok, hf} = HFTokenizer.from_file(path)
+          {iree, hf}
+      end
+
+    inputs = harness_batch_inputs()
+
+    for special <- [true, false] do
+      opts = [add_special_tokens: special]
+      {:ok, actual} = IREETokenizer.encode_batch(iree, inputs, opts)
+      {:ok, expected} = HFTokenizer.encode_batch(hf, inputs, opts)
+
+      for {input, {a, e}} <- Enum.zip(inputs, Enum.zip(actual, expected)) do
+        assert a.ids == HFEncoding.get_ids(e)
+        assert a.tokens == HFEncoding.get_tokens(e)
+        assert a.type_ids == HFEncoding.get_type_ids(e)
+        assert IREETokenizer.decode(iree, a.ids) == HFTokenizer.decode(hf, a.ids)
+        {:ok, stream} = EncodeStream.new(iree, add_special_tokens: special, max_chunk_bytes: 4096)
+        split = div(byte_size(input), 2)
+        <<head::binary-size(split), tail::binary>> = input
+        {:ok, first} = EncodeStream.feed(stream, head)
+        {:ok, second} = EncodeStream.feed(stream, tail)
+        {:ok, last} = EncodeStream.finalize(stream)
+        assert first ++ second ++ last == a.ids
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.finalize(stream)
+      end
+    end
+  end
+
+  test "Nanbeige matches added tokens after ordinary angle-bracket text" do
+    {iree, hf} =
+      case System.get_env("NANBEIGE_TOKENIZER_JSON") do
+        nil ->
+          {:ok, iree} = IREETokenizer.from_pretrained("Nanbeige/Nanbeige4.3-33B")
+          {:ok, hf} = HFTokenizer.from_pretrained("Nanbeige/Nanbeige4.3-33B")
+          {iree, hf}
+
+        path ->
+          {:ok, iree} = IREETokenizer.from_file(path)
+          {:ok, hf} = HFTokenizer.from_file(path)
+          {iree, hf}
+      end
+
+    inputs = harness_batch_inputs() ++ ["x <pad> <unk> y", "x <pad> <un"]
+    assert_batch_encoding_parity(iree, hf, inputs)
+  end
+
   test "gpt2 batch encode matches per-item Hugging Face parity on mixed-length inputs" do
     inputs = harness_batch_inputs()
 

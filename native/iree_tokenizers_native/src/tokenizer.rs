@@ -1090,6 +1090,7 @@ fn infer_stream_encode_strategy(root: &Value) -> StreamEncodeStrategy {
         Some("Unigram") => StreamEncodeStrategy::BufferedFinalize,
         Some("BPE")
             if is_exact_byte_level_bpe_candidate(root)
+                || has_digits_byte_level_sequence(root)
                 || root.get("pre_tokenizer").is_none()
                 || root.get("pre_tokenizer") == Some(&Value::Null)
                 || has_right_aligned_digit_split_pre_tokenizer(root)
@@ -1100,6 +1101,23 @@ fn infer_stream_encode_strategy(root: &Value) -> StreamEncodeStrategy {
         }
         _ => StreamEncodeStrategy::Native,
     }
+}
+
+// Digits can retain an arbitrarily long non-digit parent segment. Keep it
+// intact until EOF rather than letting native stream ring boundaries split it.
+fn has_digits_byte_level_sequence(root: &Value) -> bool {
+    let Some(pre) = root.get("pre_tokenizer") else {
+        return false;
+    };
+    pre.get("type").and_then(Value::as_str) == Some("Sequence")
+        && pre
+            .get("pretokenizers")
+            .and_then(Value::as_array)
+            .is_some_and(|children| {
+                children.len() == 2
+                    && children[0].get("type").and_then(Value::as_str) == Some("Digits")
+                    && children[1].get("type").and_then(Value::as_str) == Some("ByteLevel")
+            })
 }
 
 fn has_end_anchored_regex_normalizer(root: &Value) -> bool {
@@ -1459,18 +1477,27 @@ fn rewrite_split_regex(pattern: &str) -> Option<String> {
 
 const QWEN_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?[\p{L}\p{M}]+|\p{N}| ?[^\s\p{L}\p{M}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 const SUPERWHISPER_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+const KOLIBRI_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 const MINICPM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}+| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 const GLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 const PHONELLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*|\p{N}| ?[^\s\p{L}\p{N}]+[\r\n/]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+
+const LING_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)|\s+";
+
+// Flint adds optional contractions to the two Unicode case branches.
+const FLINT_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?| ?[\p{P}\p{S}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
 fn rewrite_gpt_whitespace_fallback(pattern: &str) -> Option<String> {
     const TRAILING_WHITESPACE_FALLBACK: &str = r"|\s+";
 
     if pattern == QWEN_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
         || pattern == SUPERWHISPER_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
+        || pattern == KOLIBRI_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
         || pattern == MINICPM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
         || pattern == GLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
         || pattern == PHONELLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
+        || pattern == LING_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
+        || pattern == FLINT_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
     {
         pattern
             .strip_suffix(TRAILING_WHITESPACE_FALLBACK)
@@ -1624,6 +1651,19 @@ fn prefix_makes_lookahead_redundant(prefix: &str, body: &str) -> bool {
 
 #[cfg(test)]
 mod sanitize_tests {
+    #[test]
+    fn rewrites_flint_whitespace_fallback() {
+        let pattern = super::FLINT_GPT_SPLIT_WITH_WHITESPACE_FALLBACK;
+        assert_eq!(
+            super::rewrite_split_regex(pattern),
+            Some(pattern.strip_suffix(r"|\s+").unwrap().to_owned())
+        );
+        assert!(
+            super::rewrite_split_regex(&pattern.replace("(?i:'s|'t|'re|'ve|'m|'ll|'d)?", ""))
+                .is_none()
+        );
+    }
+
     use super::*;
 
     #[test]
@@ -1669,6 +1709,16 @@ mod sanitize_tests {
     }
 
     #[test]
+    fn drops_kolibri_gpt_whitespace_fallback_for_bytelevel_split_parity() {
+        let out = rewrite_split_regex(KOLIBRI_GPT_SPLIT_WITH_WHITESPACE_FALLBACK)
+            .expect("expected rewrite");
+        assert_eq!(
+            out,
+            r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)"
+        );
+    }
+
+    #[test]
     fn drops_minicpm_gpt_whitespace_fallback_for_bytelevel_split_parity() {
         let out = rewrite_split_regex(MINICPM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK)
             .expect("expected rewrite");
@@ -1685,6 +1735,16 @@ mod sanitize_tests {
         assert_eq!(
             out,
             r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?\p{L}+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)"
+        );
+    }
+
+    #[test]
+    fn drops_ling_gpt_whitespace_fallback_for_bytelevel_split_parity() {
+        let out =
+            rewrite_split_regex(LING_GPT_SPLIT_WITH_WHITESPACE_FALLBACK).expect("expected rewrite");
+        assert_eq!(
+            out,
+            r"'(?i:[sdmt]|ll|ve|re)|[^\r\n\p{L}\p{N}]?+\p{L}+|\p{N}| ?[^\s\p{L}\p{N}]++[\r\n]*|\s*[\r\n]|\s+(?!\S)"
         );
     }
 

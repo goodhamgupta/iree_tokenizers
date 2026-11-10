@@ -5,6 +5,105 @@ defmodule IREETokenizers.CompatibilityTest do
   alias Tokenizers.Encoding, as: HFEncoding
   alias Tokenizers.Tokenizer, as: HFTokenizer
 
+  @tag timeout: 120_000
+  test "added-token tables beyond 65535 entries preserve matching and streaming" do
+    fixture = fixture_path("bpe_bytelevel_minimal.json") |> File.read!() |> Jason.decode!()
+    # Reverse order exercises sorting; a second bucket exercises large start indices.
+    added =
+      for i <- 65536..0//-1 do
+        %{
+          "id" => 1000 + i,
+          "content" => "<|large:#{String.pad_leading(Integer.to_string(i), 5, "0")}|>",
+          "single_word" => false,
+          "lstrip" => false,
+          "rstrip" => false,
+          "normalized" => false,
+          "special" => true
+        }
+      end
+
+    added = added ++ [%{hd(added) | "id" => 66537, "content" => "[last]"}]
+
+    vocab =
+      Enum.reduce(added, fixture["model"]["vocab"], fn token, vocab ->
+        Map.put(vocab, token["content"], token["id"])
+      end)
+
+    json =
+      fixture
+      |> put_in(["model", "vocab"], vocab)
+      |> Map.put("added_tokens", added)
+      |> Jason.encode!()
+
+    {:ok, tokenizer} = Tokenizer.from_buffer(json)
+    {:ok, reference} = HFTokenizer.from_buffer(json)
+    # Compare offsets and literal-special masks to the same tokens in a small
+    # table, preserving the runtime's existing metadata behavior.
+    small_added = Enum.filter(added, &(&1["id"] in [1000, 66535, 66536, 66537]))
+
+    small_json =
+      json |> Jason.decode!() |> Map.put("added_tokens", small_added) |> Jason.encode!()
+
+    {:ok, small_table} = Tokenizer.from_buffer(small_json)
+
+    inputs = [
+      "<|large:00000|>",
+      "<|large:65535|>",
+      "<|large:65536|>[last]",
+      "Hello <|large:65536|> world",
+      "<|large:65536X",
+      "<|large:"
+    ]
+
+    for special <- [true, false] do
+      for input <- inputs do
+        {:ok, actual} = Tokenizer.encode(tokenizer, input, add_special_tokens: special)
+        {:ok, expected} = HFTokenizer.encode(reference, input, add_special_tokens: special)
+        assert actual.ids == HFEncoding.get_ids(expected)
+        assert actual.tokens == HFEncoding.get_tokens(expected)
+        assert actual.type_ids == HFEncoding.get_type_ids(expected)
+        assert actual.attention_mask == HFEncoding.get_attention_mask(expected)
+        assert actual.offsets == nil
+
+        {:ok, tracked} =
+          Tokenizer.encode(tokenizer, input, add_special_tokens: special, track_offsets: true)
+
+        {:ok, small} =
+          Tokenizer.encode(small_table, input, add_special_tokens: special, track_offsets: true)
+
+        assert tracked == small
+
+        for skip <- [true, false] do
+          assert Tokenizer.decode(tokenizer, actual.ids, skip_special_tokens: skip) ==
+                   HFTokenizer.decode(reference, actual.ids, skip_special_tokens: skip)
+        end
+
+        {:ok, stream} =
+          EncodeStream.new(tokenizer, add_special_tokens: special, max_chunk_bytes: 1)
+
+        prefix =
+          for <<byte <- input>>, reduce: [] do
+            ids ->
+              {:ok, chunk} = EncodeStream.feed(stream, <<byte>>)
+              ids ++ chunk
+          end
+
+        assert {:ok, suffix} = EncodeStream.finalize(stream)
+        assert prefix ++ suffix == actual.ids
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.finalize(stream)
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.feed(stream, " ")
+      end
+
+      {:ok, actual} = Tokenizer.encode_batch(tokenizer, inputs, add_special_tokens: special)
+      {:ok, expected} = HFTokenizer.encode_batch(reference, inputs, add_special_tokens: special)
+      assert Enum.map(actual, & &1.ids) == Enum.map(expected, &HFEncoding.get_ids/1)
+    end
+  end
+
   test "matches official tokenizers on shared bpe fixture outputs" do
     fixture = fixture_path("bpe_bytelevel_minimal.json")
     {:ok, iree_tokenizer} = Tokenizer.from_file(fixture)
@@ -85,6 +184,149 @@ defmodule IREETokenizers.CompatibilityTest do
     assert Encoding.get_ids(iree_encoding) == HFEncoding.get_ids(hf_encoding)
     assert Encoding.get_tokens(iree_encoding) == HFEncoding.get_tokens(hf_encoding)
     assert Encoding.get_tokens(iree_encoding) == ["▁,", ",,"]
+  end
+
+  test "Kolibri Split preserves whitespace branch priority" do
+    fixture = fixture_path("kolibri_whitespace_minimal.json")
+    {:ok, tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, reference} = HFTokenizer.from_file(fixture)
+
+    inputs = ["   a", "a    a", "a   ", "   ", "a\t\ta", "a\n    a", "a  !", "a   111"]
+
+    assert_whitespace_parity(tokenizer, reference, inputs)
+  end
+
+  test "Ling Split regex preserves whitespace branch priority" do
+    fixture = fixture_path("ling_whitespace_minimal.json")
+    {:ok, tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, reference} = HFTokenizer.from_file(fixture)
+
+    inputs =
+      ["  a", "    return", "\t\ta", "\n\n-", "a  ", "a\r\n  return"] ++
+        Enum.map(1..16, &(String.duplicate(" ", &1) <> "a"))
+
+    assert_whitespace_parity(tokenizer, reference, inputs)
+  end
+
+  test "Flint Split regex preserves whitespace branch priority" do
+    fixture = fixture_path("flint_whitespace_minimal.json")
+    {:ok, tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, reference} = HFTokenizer.from_file(fixture)
+
+    inputs =
+      ["  a", "    return", "\t\ta", "\n\n-", "a  ", "a\r\n  return"] ++
+        Enum.map(1..16, &(String.duplicate(" ", &1) <> "a"))
+
+    assert_whitespace_parity(tokenizer, reference, inputs)
+  end
+
+  test "Digits ByteLevel sequence drains finalization across segment batches" do
+    fixture = fixture_path("digits_bytelevel_finalize.json")
+    {:ok, tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, reference} = HFTokenizer.from_file(fixture)
+
+    inputs = for n <- [63, 64, 65, 100, 1024], do: String.duplicate("the quick brown fox. ", n)
+
+    inputs =
+      inputs ++ ["123" <> List.last(inputs) <> "456", String.duplicate("abc123 def456 ", 100)]
+
+    for special <- [true, false] do
+      for input <- inputs do
+        {:ok, actual} =
+          Tokenizer.encode(tokenizer, input, add_special_tokens: special, track_offsets: true)
+
+        {:ok, expected} = HFTokenizer.encode(reference, input, add_special_tokens: special)
+        assert actual.ids == HFEncoding.get_ids(expected)
+        assert actual.tokens == HFEncoding.get_tokens(expected)
+        assert actual.offsets == HFEncoding.get_offsets(expected)
+        assert actual.type_ids == HFEncoding.get_type_ids(expected)
+        assert actual.attention_mask == HFEncoding.get_attention_mask(expected)
+        assert actual.special_tokens_mask == HFEncoding.get_special_tokens_mask(expected)
+
+        assert Tokenizer.decode(tokenizer, actual.ids) ==
+                 HFTokenizer.decode(reference, actual.ids)
+
+        {:ok, stream} =
+          EncodeStream.new(tokenizer, add_special_tokens: special, max_chunk_bytes: 4096)
+
+        prefix =
+          for chunk <- [input], reduce: [] do
+            ids ->
+              {:ok, chunk} = EncodeStream.feed(stream, chunk)
+              ids ++ chunk
+          end
+
+        assert {:ok, suffix} = EncodeStream.finalize(stream)
+        assert prefix ++ suffix == actual.ids
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.finalize(stream)
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.feed(stream, " ")
+      end
+
+      {:ok, actual} = Tokenizer.encode_batch(tokenizer, inputs, add_special_tokens: special)
+      {:ok, expected} = HFTokenizer.encode_batch(reference, inputs, add_special_tokens: special)
+      assert Enum.map(actual, & &1.ids) == Enum.map(expected, &HFEncoding.get_ids/1)
+      assert Enum.all?(actual, &is_nil(&1.offsets))
+    end
+  end
+
+  test "normalized added tokens are found after a nonmatching candidate prefix" do
+    fixture = fixture_path("metaspace_added_token_after_nonmatch.json")
+    {:ok, tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, reference} = HFTokenizer.from_file(fixture)
+
+    inputs = [
+      "x <|endoftext|> x <s> </s> <pad> <unk> y",
+      "x <s> </s> <pad> <unk>",
+      "<pad> <unk>",
+      "x <pad> <unk> y",
+      "<pad> <pad> <s> </s>",
+      "<pad> <un",
+      "<pad>"
+    ]
+
+    for special <- [true, false] do
+      for input <- inputs do
+        {:ok, actual} = Tokenizer.encode(tokenizer, input, add_special_tokens: special)
+        {:ok, expected} = HFTokenizer.encode(reference, input, add_special_tokens: special)
+        assert actual.ids == HFEncoding.get_ids(expected)
+        assert actual.tokens == HFEncoding.get_tokens(expected)
+        assert actual.type_ids == HFEncoding.get_type_ids(expected)
+        assert actual.attention_mask == HFEncoding.get_attention_mask(expected)
+        assert is_nil(actual.offsets)
+
+        for skip <- [true, false] do
+          assert Tokenizer.decode(tokenizer, actual.ids, skip_special_tokens: skip) ==
+                   HFTokenizer.decode(reference, actual.ids, skip_special_tokens: skip)
+        end
+
+        {:ok, stream} =
+          EncodeStream.new(tokenizer, add_special_tokens: special, max_chunk_bytes: 1)
+
+        prefix =
+          for <<byte <- input>>, reduce: [] do
+            ids ->
+              {:ok, chunk} = EncodeStream.feed(stream, <<byte>>)
+              ids ++ chunk
+          end
+
+        assert {:ok, suffix} = EncodeStream.finalize(stream)
+        assert prefix ++ suffix == actual.ids
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.finalize(stream)
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.feed(stream, "x")
+      end
+
+      {:ok, actual} = Tokenizer.encode_batch(tokenizer, inputs, add_special_tokens: special)
+      {:ok, expected} = HFTokenizer.encode_batch(reference, inputs, add_special_tokens: special)
+      assert Enum.map(actual, & &1.ids) == Enum.map(expected, &HFEncoding.get_ids/1)
+    end
   end
 
   test "BPE repeated suffix merges preserve rank across alternate decompositions" do
@@ -983,5 +1225,49 @@ defmodule IREETokenizers.CompatibilityTest do
   defp do_chunk_binary(binary, chunk_bytes, acc) do
     <<chunk::binary-size(chunk_bytes), rest::binary>> = binary
     do_chunk_binary(rest, chunk_bytes, [chunk | acc])
+  end
+
+  defp assert_whitespace_parity(tokenizer, reference, inputs) do
+    for special <- [true, false] do
+      for input <- inputs do
+        {:ok, actual} =
+          Tokenizer.encode(tokenizer, input, add_special_tokens: special, track_offsets: true)
+
+        {:ok, expected} = HFTokenizer.encode(reference, input, add_special_tokens: special)
+        assert actual.ids == HFEncoding.get_ids(expected)
+        assert actual.tokens == HFEncoding.get_tokens(expected)
+        assert actual.offsets == HFEncoding.get_offsets(expected)
+        assert actual.type_ids == HFEncoding.get_type_ids(expected)
+        assert actual.attention_mask == HFEncoding.get_attention_mask(expected)
+        assert actual.special_tokens_mask == HFEncoding.get_special_tokens_mask(expected)
+
+        assert Tokenizer.decode(tokenizer, actual.ids) ==
+                 HFTokenizer.decode(reference, actual.ids)
+
+        {:ok, stream} =
+          EncodeStream.new(tokenizer, add_special_tokens: special, max_chunk_bytes: 1)
+
+        prefix =
+          for <<byte <- input>>, reduce: [] do
+            ids ->
+              {:ok, chunk} = EncodeStream.feed(stream, <<byte>>)
+              ids ++ chunk
+          end
+
+        assert {:ok, suffix} = EncodeStream.finalize(stream)
+        assert prefix ++ suffix == actual.ids
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.finalize(stream)
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.feed(stream, " ")
+      end
+
+      {:ok, actual} = Tokenizer.encode_batch(tokenizer, inputs, add_special_tokens: special)
+      {:ok, expected} = HFTokenizer.encode_batch(reference, inputs, add_special_tokens: special)
+      assert Enum.map(actual, & &1.ids) == Enum.map(expected, &HFEncoding.get_ids/1)
+      assert Enum.all?(actual, &is_nil(&1.offsets))
+    end
   end
 end

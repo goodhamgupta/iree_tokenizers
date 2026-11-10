@@ -75,6 +75,8 @@ typedef struct iree_tokenizer_segmenter_sequence_state_t {
 
   // True once child[0].finalize() has returned all segments.
   bool finalize_child0_complete;
+  // Once finalization starts, resume it rather than processing input again.
+  bool finalizing;
 
   // Bytes child[0] consumed to produce the current in-progress segment.
   // Committed as out_consumed only after the entire expansion completes.
@@ -486,6 +488,11 @@ static iree_status_t iree_tokenizer_segmenter_sequence_pull_next_output_segment(
 // Processing
 //===----------------------------------------------------------------------===//
 
+static iree_status_t iree_tokenizer_segmenter_sequence_state_finalize(
+    iree_tokenizer_segmenter_state_t* base_state,
+    iree_string_view_t remaining_input, iree_tokenizer_segment_output_t output,
+    iree_host_size_t* out_segment_count);
+
 static iree_status_t iree_tokenizer_segmenter_sequence_state_process(
     iree_tokenizer_segmenter_state_t* base_state, iree_string_view_t input,
     iree_tokenizer_segment_output_t output, iree_host_size_t* out_consumed,
@@ -497,6 +504,18 @@ static iree_status_t iree_tokenizer_segmenter_sequence_state_process(
 
   *out_consumed = 0;
   *out_segment_count = 0;
+
+  // The tokenizer pump drains segment batches through process(), including
+  // after finalize() filled a batch. Preserve the finalize continuation so
+  // child[0] does not rescan already-finalized input and become pending again.
+  if (state->finalizing) {
+    IREE_RETURN_IF_ERROR(iree_tokenizer_segmenter_sequence_state_finalize(
+        base_state, input, output, out_segment_count));
+    if (state->finalize_child0_complete && !state->have_current_segment) {
+      *out_consumed = input.size;
+    }
+    return iree_ok_status();
+  }
 
   if (input.size == 0 || output.capacity == 0) {
     return iree_ok_status();
@@ -757,6 +776,8 @@ static iree_status_t iree_tokenizer_segmenter_sequence_state_finalize(
       (const iree_tokenizer_segmenter_sequence_t*)base_state->segmenter;
 
   iree_host_size_t output_count = 0;
+
+  state->finalizing = true;
 
   // Apply cumulative offset from previous finalize() calls. When we store
   // pipeline state, level offsets are relative to this adjusted position.

@@ -1,0 +1,132 @@
+{
+  "version": "1.0",
+  "truncation": null,
+  "padding": null,
+  "added_tokens": [
+    {
+      "id": 0,
+      "content": "<unk>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": true,
+      "special": true
+    },
+    {
+      "id": 1,
+      "content": "<s>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": true,
+      "special": true
+    },
+    {
+      "id": 2,
+      "content": "</s>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": true,
+      "special": true
+    },
+    {
+      "id": 22,
+      "content": "<|endoftext|>",
+      "single_word": false,
+      "lstrip": false,
+      "rstrip": false,
+      "normalized": false,
+      "special": true
+    }
+  ],
+  "normalizer": null,
+  "pre_tokenizer": {
+    "type": "Metaspace",
+    "replacement": "\u2581",
+    "prepend_scheme": "first",
+    "split": false
+  },
+  "post_processor": null,
+  "decoder": {
+    "type": "Sequence",
+    "decoders": [
+      {
+        "type": "Replace",
+        "pattern": {
+          "String": "\u2581"
+        },
+        "content": " "
+      },
+      {
+        "type": "ByteFallback"
+      },
+      {
+        "type": "Fuse"
+      },
+      {
+        "type": "Strip",
+        "content": " ",
+        "start": 1,
+        "stop": 0
+      }
+    ]
+  },
+  "model": {
+    "type": "BPE",
+    "dropout": null,
+    "unk_token": "<unk>",
+    "continuing_subword_prefix": null,
+    "end_of_word_suffix": null,
+    "fuse_unk": true,
+    "byte_fallback": false,
+    "ignore_merges": false,
+    "vocab": {
+      "<unk>": 0,
+      "<s>": 1,
+      "</s>": 2,
+      "\u2581": 3,
+      "<": 4,
+      ">": 5,
+      "p": 6,
+      "a": 7,
+      "d": 8,
+      "u": 9,
+      "n": 10,
+      "k": 11,
+      "x": 12,
+      "y": 13,
+      "z": 14,
+      "[": 15,
+      "]": 16,
+      "pa": 17,
+      "pad": 18,
+      "un": 19,
+      "unk": 20,
+      "\u2581<": 21,
+      "<|endoftext|>": 22
+    },
+    "merges": [
+      [
+        "p",
+        "a"
+      ],
+      [
+        "pa",
+        "d"
+      ],
+      [
+        "u",
+        "n"
+      ],
+      [
+        "un",
+        "k"
+      ],
+      [
+        "\u2581",
+        "<"
+      ]
+    ]
+  }
+}
