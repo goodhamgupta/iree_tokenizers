@@ -2143,10 +2143,33 @@ iree_tokenizer_encode_state_match_post_norm_special_tokens(
   // If safe_prefix_length > 0, no token starts in the first `safe` bytes.
   iree_host_size_t safe = 0;
   if (already_matched == 0) {
-    safe = iree_tokenizer_special_tokens_safe_prefix_length(
-        &tokenizer->special_tokens_post_norm, normalized_text);
+    // A rejected candidate does not rule out later added tokens. For example,
+    // "<pad> <unk>" must still find <unk> when <pad> is ordinary model text.
+    // Scan candidates without splitting ordinary text at false prefixes.
+    while (safe < normalized_text.size) {
+      iree_string_view_t remaining = {
+          .data = normalized_text.data + safe,
+          .size = normalized_text.size - safe,
+      };
+      safe += iree_tokenizer_special_tokens_safe_prefix_length(
+          &tokenizer->special_tokens_post_norm, remaining);
+      if (safe == normalized_text.size) break;
+      iree_string_view_t candidate = {
+          .data = normalized_text.data + safe,
+          .size = normalized_text.size - safe,
+      };
+      iree_host_size_t candidate_length = 0;
+      iree_tokenizer_token_id_t candidate_id = 0;
+      iree_tokenizer_special_tokens_encode_state_t candidate_state = {0};
+      iree_tokenizer_special_tokens_match_result_t candidate_result =
+          iree_tokenizer_special_tokens_match(
+              &tokenizer->special_tokens_post_norm, candidate,
+              &candidate_length, &candidate_id, &candidate_state);
+      if (candidate_result != IREE_TOKENIZER_SPECIAL_TOKENS_NO_MATCH) break;
+      ++safe;
+    }
     if (safe == normalized_text.size) {
-      return IREE_TOKENIZER_POST_NORM_NO_MATCH;  // No possible match.
+      return IREE_TOKENIZER_POST_NORM_NO_MATCH;
     }
     // If safe > 0, a special token could start at position `safe`. Check if it
     // actually matches/could match before reporting LIMIT. This avoids false
@@ -2178,7 +2201,13 @@ iree_tokenizer_encode_state_match_post_norm_special_tokens(
           state->in_finalize_mode) {
         return IREE_TOKENIZER_POST_NORM_NO_MATCH;
       }
-      // A special token matches or could match at position `safe`. Strip
+      // Keep the prefix together with an incomplete candidate until it can be
+      // resolved. Splitting now would change ordinary BPE merges if EOF proves
+      // that the candidate was only a prefix (for example " <un").
+      if (check_result == IREE_TOKENIZER_SPECIAL_TOKENS_NEED_MORE) {
+        return IREE_TOKENIZER_POST_NORM_NEED_MORE;
+      }
+      // A special token matches at position `safe`. Strip
       // trailing whitespace if the token has LSTRIP - this prevents the
       // whitespace from being tokenized when it should be consumed by the
       // special token match (RoBERTa/BART <mask> with lstrip=true).
@@ -2677,6 +2706,27 @@ static iree_status_t iree_tokenizer_encode_state_pump(
       iree_host_size_t safe = iree_tokenizer_special_tokens_safe_prefix_length(
           &tokenizer->special_tokens,
           iree_make_string_view(chunk->data, chunk->size));
+      // Do not break normalization at a rejected raw-token candidate: doing
+      // so can leave the segmenter pending and hide a later normalized token.
+      while (safe < chunk->size) {
+        iree_string_view_t candidate = {
+            .data = chunk->data + safe,
+            .size = chunk->size - safe,
+        };
+        iree_host_size_t candidate_length = 0;
+        iree_tokenizer_token_id_t candidate_id = 0;
+        iree_tokenizer_special_tokens_encode_state_t candidate_state = {0};
+        if (iree_tokenizer_special_tokens_match(
+                &tokenizer->special_tokens, candidate, &candidate_length,
+                &candidate_id, &candidate_state) !=
+            IREE_TOKENIZER_SPECIAL_TOKENS_NO_MATCH) {
+          break;
+        }
+        ++safe;
+        safe += iree_tokenizer_special_tokens_safe_prefix_length(
+            &tokenizer->special_tokens,
+            iree_make_string_view(chunk->data + safe, chunk->size - safe));
+      }
       if (safe == 0) {
         should_match = true;
       } else {

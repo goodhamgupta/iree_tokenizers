@@ -393,6 +393,62 @@ defmodule IREETokenizers.CompatibilityTest do
     end
   end
 
+  test "normalized added tokens are found after a nonmatching candidate prefix" do
+    fixture = fixture_path("metaspace_added_token_after_nonmatch.json")
+    {:ok, tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, reference} = HFTokenizer.from_file(fixture)
+
+    inputs = [
+      "x <|endoftext|> x <s> </s> <pad> <unk> y",
+      "x <s> </s> <pad> <unk>",
+      "<pad> <unk>",
+      "x <pad> <unk> y",
+      "<pad> <pad> <s> </s>",
+      "<pad> <un",
+      "<pad>"
+    ]
+
+    for special <- [true, false] do
+      for input <- inputs do
+        {:ok, actual} = Tokenizer.encode(tokenizer, input, add_special_tokens: special)
+        {:ok, expected} = HFTokenizer.encode(reference, input, add_special_tokens: special)
+        assert actual.ids == HFEncoding.get_ids(expected)
+        assert actual.tokens == HFEncoding.get_tokens(expected)
+        assert actual.type_ids == HFEncoding.get_type_ids(expected)
+        assert actual.attention_mask == HFEncoding.get_attention_mask(expected)
+        assert is_nil(actual.offsets)
+
+        for skip <- [true, false] do
+          assert Tokenizer.decode(tokenizer, actual.ids, skip_special_tokens: skip) ==
+                   HFTokenizer.decode(reference, actual.ids, skip_special_tokens: skip)
+        end
+
+        {:ok, stream} =
+          EncodeStream.new(tokenizer, add_special_tokens: special, max_chunk_bytes: 1)
+
+        prefix =
+          for <<byte <- input>>, reduce: [] do
+            ids ->
+              {:ok, chunk} = EncodeStream.feed(stream, <<byte>>)
+              ids ++ chunk
+          end
+
+        assert {:ok, suffix} = EncodeStream.finalize(stream)
+        assert prefix ++ suffix == actual.ids
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.finalize(stream)
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.feed(stream, "x")
+      end
+
+      {:ok, actual} = Tokenizer.encode_batch(tokenizer, inputs, add_special_tokens: special)
+      {:ok, expected} = HFTokenizer.encode_batch(reference, inputs, add_special_tokens: special)
+      assert Enum.map(actual, & &1.ids) == Enum.map(expected, &HFEncoding.get_ids/1)
+    end
+  end
+
   test "BPE repeated suffix merges preserve rank across alternate decompositions" do
     fixture = fixture_path("bpe_repeated_suffix_overlap.json")
     {:ok, tokenizer} = Tokenizer.from_file(fixture)
