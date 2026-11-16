@@ -1487,6 +1487,9 @@ const LING_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"'(?i:[sdmt]|ll|ve|re)|[^
 // Flint adds optional contractions to the two Unicode case branches.
 const FLINT_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?| ?[\p{P}\p{S}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
+// Horizon extends the letter branch with marks and zero-width joiners.
+const HORIZON_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"(?i:'s|'t|'re|'ve|'m|'ll|'d)|[^\r\n\p{L}\p{N}]?(?:\p{L}|\p{M}|\u200C|\u200D)+|\p{N}{1,3}| ?[^\s\p{L}\p{N}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
+
 fn rewrite_gpt_whitespace_fallback(pattern: &str) -> Option<String> {
     const TRAILING_WHITESPACE_FALLBACK: &str = r"|\s+";
 
@@ -1498,6 +1501,7 @@ fn rewrite_gpt_whitespace_fallback(pattern: &str) -> Option<String> {
         || pattern == PHONELLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
         || pattern == LING_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
         || pattern == FLINT_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
+        || pattern == HORIZON_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
     {
         pattern
             .strip_suffix(TRAILING_WHITESPACE_FALLBACK)
