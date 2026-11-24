@@ -208,6 +208,18 @@ defmodule IREETokenizers.CompatibilityTest do
     assert_whitespace_parity(tokenizer, reference, inputs)
   end
 
+  test "Spark Split regex preserves whitespace branch priority" do
+    fixture = fixture_path("spark_whitespace_minimal.json")
+    {:ok, tokenizer} = Tokenizer.from_file(fixture)
+    {:ok, reference} = HFTokenizer.from_file(fixture)
+
+    inputs =
+      ["  a", "    return", "\t\ta", "\n\n-", "a  ", "a\r\n  return"] ++
+        Enum.map(1..16, &(String.duplicate(" ", &1) <> "a"))
+
+    assert_whitespace_parity(tokenizer, reference, inputs)
+  end
+
   test "Flint Split regex preserves whitespace branch priority" do
     fixture = fixture_path("flint_whitespace_minimal.json")
     {:ok, tokenizer} = Tokenizer.from_file(fixture)

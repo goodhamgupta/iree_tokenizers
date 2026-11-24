@@ -1487,6 +1487,9 @@ const LING_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"'(?i:[sdmt]|ll|ve|re)|[^
 // Flint adds optional contractions to the two Unicode case branches.
 const FLINT_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = r"[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]*[\p{Ll}\p{Lm}\p{Lo}\p{M}]+(?i:'s|'t|'re|'ve|'m|'ll|'d)?|[^\r\n\p{L}\p{N}]?[\p{Lu}\p{Lt}\p{Lm}\p{Lo}\p{M}]+[\p{Ll}\p{Lm}\p{Lo}\p{M}]*(?i:'s|'t|'re|'ve|'m|'ll|'d)?| ?[\p{P}\p{S}]+[\r\n]*|\s*[\r\n]+|\s+(?!\S)|\s+";
 
+// Spark serializes literal CR/LF inside its character classes.
+const SPARK_GPT_SPLIT_WITH_WHITESPACE_FALLBACK: &str = "[!\"#$%&'()*+,\\-./:;<=>?@\\[\\\\\\]^_`{|}~][A-Za-z]+|[^\r\n\\p{L}\\p{P}\\p{S}]?[\\p{L}\\p{M}]+| ?[\\p{P}\\p{S}]+|[\r\n]|\\s+(?!\\S)|\\s+";
+
 fn rewrite_gpt_whitespace_fallback(pattern: &str) -> Option<String> {
     const TRAILING_WHITESPACE_FALLBACK: &str = r"|\s+";
 
@@ -1498,6 +1501,7 @@ fn rewrite_gpt_whitespace_fallback(pattern: &str) -> Option<String> {
         || pattern == PHONELLM_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
         || pattern == LING_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
         || pattern == FLINT_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
+        || pattern == SPARK_GPT_SPLIT_WITH_WHITESPACE_FALLBACK
     {
         pattern
             .strip_suffix(TRAILING_WHITESPACE_FALLBACK)
@@ -1651,6 +1655,16 @@ fn prefix_makes_lookahead_redundant(prefix: &str, body: &str) -> bool {
 
 #[cfg(test)]
 mod sanitize_tests {
+    #[test]
+    fn rewrites_spark_whitespace_fallback() {
+        let pattern = super::SPARK_GPT_SPLIT_WITH_WHITESPACE_FALLBACK;
+        assert_eq!(
+            super::rewrite_split_regex(pattern),
+            Some(pattern.strip_suffix(r"|\s+").unwrap().to_owned())
+        );
+        assert!(pattern.contains("\r\n"));
+    }
+
     #[test]
     fn rewrites_flint_whitespace_fallback() {
         let pattern = super::FLINT_GPT_SPLIT_WITH_WHITESPACE_FALLBACK;
