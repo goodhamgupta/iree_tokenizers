@@ -163,6 +163,54 @@ defmodule IREETokenizers.BatchIntegrationTest do
     assert_batch_encoding_parity(iree, hf, harness_batch_inputs())
   end
 
+  test "Spark whitespace preserves one-shot, batch, and stream parity" do
+    {iree, hf} =
+      case System.get_env("SPARK_TOKENIZER_JSON") do
+        nil ->
+          {:ok, iree} = IREETokenizer.from_pretrained("XHToken/Spark-X2.6-4B")
+          {:ok, hf} = HFTokenizer.from_pretrained("XHToken/Spark-X2.6-4B")
+          {iree, hf}
+
+        path ->
+          {:ok, iree} = IREETokenizer.from_file(path)
+          {:ok, hf} = HFTokenizer.from_file(path)
+          {iree, hf}
+      end
+
+    inputs = [
+      "   leading\t\ttabs\n\nnewlines   trailing   ",
+      "def f(x):\n    return [i**2 for i in range(x) if i % 2 == 0]\n",
+      "  a",
+      "a  ",
+      "a\r\n  return"
+    ]
+
+    for special <- [true, false] do
+      opts = [add_special_tokens: special]
+      {:ok, actual} = IREETokenizer.encode_batch(iree, inputs, opts)
+      {:ok, expected} = HFTokenizer.encode_batch(hf, inputs, opts)
+
+      for {input, {a, e}} <- Enum.zip(inputs, Enum.zip(actual, expected)) do
+        assert {:ok, one_shot} = IREETokenizer.encode(iree, input, opts)
+        assert one_shot == a
+        assert a.ids == HFEncoding.get_ids(e)
+        assert a.tokens == HFEncoding.get_tokens(e)
+        assert a.type_ids == HFEncoding.get_type_ids(e)
+        assert IREETokenizer.decode(iree, a.ids) == HFTokenizer.decode(hf, a.ids)
+        {:ok, stream} = EncodeStream.new(iree, add_special_tokens: special, max_chunk_bytes: 4096)
+        split = div(byte_size(input), 2)
+        <<head::binary-size(split), tail::binary>> = input
+        {:ok, first} = EncodeStream.feed(stream, head)
+        {:ok, second} = EncodeStream.feed(stream, tail)
+        {:ok, last} = EncodeStream.finalize(stream)
+        assert first ++ second ++ last == a.ids
+
+        assert {:error, {:invalid_argument, "stream already finalized"}} =
+                 EncodeStream.finalize(stream)
+      end
+    end
+  end
+
   test "Mellum Digits ByteLevel handles long inputs and streaming" do
     {iree, hf} =
       case System.get_env("MELLUM_TOKENIZER_JSON") do
